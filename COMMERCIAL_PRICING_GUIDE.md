@@ -92,4 +92,4 @@ bash scripts/package_release.sh
 ### 提交思源集市步骤：
 1. 在 GitHub 创建公开仓库 `lsqingfeng/siyuan-metrix`（注意 `.gitignore` 已自动保护 `.private/` 私钥不被上传），推送代码；
 2. 在该仓库创建 GitHub Release（Tag 为 `v2.0.0`），将 `release/package.zip` 作为 Release 附件上传；
-3. Fork 官方集市仓库 [siyuan-note/bazaar](https://github.com/siyuan-note/bazaar)，在 `plugins.json` 中追加 `"lsqingfeng/siyuan-metrix"` 并发起 Pull Request，CI 自动校验通过后即可正式出现在全球思源笔记用户的「集市 -> 插件」列表中！
+3. Fork 官方集市仓库 [siyuan-note/bazaar](https://github.com/siyuan-note/bazaar)，在根目录 `plugins.txt` 末尾追加一行 `lsqingfeng/siyuan-metrix`（单独一行，无逗号、无多余空行）并发起 Pull Request，CI 自动校验通过合并后即可正式出现在全球思源笔记用户的「集市 -> 插件」列表中！
