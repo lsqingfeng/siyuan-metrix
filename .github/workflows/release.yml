@@ -1,0 +1,49 @@
+name: Release SiYuan Bazaar Package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build package.zip for SiYuan Bazaar
+        run: |
+          python3 - <<'PY'
+          import os, zipfile
+
+          src_dir = "siyuan-plugin"
+          os.makedirs("release", exist_ok=True)
+          out_zip = "release/package.zip"
+
+          with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              for root, dirs, files in os.walk(src_dir, followlinks=False):
+                  dirs[:] = sorted([d for d in dirs if not d.startswith(".") and d != "modules"])
+                  for fname in sorted(files):
+                      if fname.startswith(".") or fname.endswith(".tmp") or fname.endswith(".pem"):
+                          continue
+                      full_path = os.path.join(root, fname)
+                      if os.path.islink(full_path):
+                          continue
+                      rel_path = os.path.relpath(full_path, src_dir).replace(os.sep, "/")
+                      zf.write(full_path, rel_path)
+          print("Built", out_zip, os.path.getsize(out_zip), "bytes")
+          PY
+          cp browser-companion/dist/metrix-companion.zip release/metrix-companion.zip
+
+      - name: Create GitHub Release & Upload package.zip
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }} - Metrix Multi-Platform Publisher"
+          generate_release_notes: true
+          files: |
+            release/package.zip
+            release/metrix-companion.zip
