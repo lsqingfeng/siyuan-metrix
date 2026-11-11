@@ -1,0 +1,56 @@
+{
+  "name": "siyuan-metrix",
+  "author": "lsqingfeng",
+  "url": "https://github.com/lsqingfeng/siyuan-metrix",
+  "version": "2.0.0",
+  "minAppVersion": "3.0.0",
+  "backends": [
+    "windows",
+    "linux",
+    "darwin"
+  ],
+  "frontends": [
+    "desktop",
+    "desktop-window"
+  ],
+  "disabledInPublish": true,
+  "icon": "icon.png",
+  "preview": "preview.png",
+  "displayName": {
+    "default": "Metrix: Multi-Platform Matrix Publisher",
+    "zh_CN": "Metrix 自媒体矩阵一键分发",
+    "zh-CN": "Metrix 自媒体矩阵一键分发"
+  },
+  "description": {
+    "default": "Zero-Python multi-platform publisher for SiYuan Note. Reuses authenticated browser sessions to dispatch articles to Zhihu, Juejin, CSDN, Toutiao, Bilibili, and WeChat.",
+    "zh_CN": "思源笔记多平台矩阵一键分发套件。零 Python 依赖，安全复用浏览器登录态，一键并发打入知乎、稀土掘金、CSDN、今日头条、B站专栏草稿箱并支持微信极客排版。",
+    "zh-CN": "思源笔记多平台矩阵一键分发套件。零 Python 依赖，安全复用浏览器登录态，一键并发打入知乎、稀土掘金、CSDN、今日头条、B站专栏草稿箱并支持微信极客排版。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh_CN": "README.zh-CN.md",
+    "zh-CN": "README.zh-CN.md"
+  },
+  "funding": {
+    "custom": [
+      "https://afdian.com/a/lsqingfeng"
+    ],
+    "links": [
+      {
+        "label": "爱发电 · 升级 Metrix 终身专业版",
+        "url": "https://afdian.com/a/lsqingfeng"
+      }
+    ]
+  },
+  "keywords": [
+    "publish",
+    "matrix",
+    "zhihu",
+    "juejin",
+    "csdn",
+    "toutiao",
+    "bilibili",
+    "wechat",
+    "publisher"
+  ]
+}

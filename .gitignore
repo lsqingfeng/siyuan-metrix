@@ -1,0 +1,15 @@
+# Private Ed25519 signing keys & generated license stock (NEVER COMMIT!)
+.private/
+*.pem
+*stock*.txt
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Dependencies & Build artifacts
+node_modules/
+release/
+*.tmp
