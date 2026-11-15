@@ -2,7 +2,7 @@
   "name": "siyuan-metrix",
   "author": "lsqingfeng",
   "url": "https://github.com/lsqingfeng/siyuan-metrix",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "minAppVersion": "3.0.0",
   "backends": [
     "windows",

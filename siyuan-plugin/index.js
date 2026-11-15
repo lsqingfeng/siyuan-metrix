@@ -873,9 +873,35 @@ class ThemeEngine {
         html = html.replace(/^# (.*$)/gim, `
             <div style="margin: 20px 0; text-align: center; font-size: 22px; font-weight: 800; color: #0f172a; line-height: 1.4;">$1</div>
         `);
-        html = html.replace(/^\> (.*$)/gim, `
-            <div style="margin: 20px 0; padding: 14px 18px; background: #f8fafc; border-left: 4px solid #38bdf8; border-radius: 0 8px 8px 0; color: #334155; font-size: 14px; line-height: 1.7;">$1</div>
-        `);
+        html = html.replace(/(?:^>[ \t]?.*(?:\r?\n|$))+/gm, (block) => {
+            const qLines = block
+                .trim()
+                .split(/\r?\n/)
+                .map(l => l.replace(/^>[ \t]?/, "").trim())
+                .filter(Boolean);
+            if (!qLines.length) return "";
+            return `\n\n<blockquote style="margin: 20px 0; padding: 14px 18px; background: #f8fafc; border-left: 4px solid #38bdf8; border-radius: 0 8px 8px 0; color: #334155; font-size: 14px; line-height: 1.75;">${qLines.join("<br/>")}</blockquote>\n\n`;
+        });
+        html = html.replace(/(?:^[ \t]*[-*+][ \t]+.+(?:\r?\n|$))+/gm, (block) => {
+            const items = block
+                .trim()
+                .split(/\r?\n/)
+                .map(l => l.replace(/^[ \t]*[-*+][ \t]+/, "").trim())
+                .filter(Boolean)
+                .map(it => `<li style="margin: 8px 0; line-height: 1.75;">${it}</li>`)
+                .join("");
+            return `\n\n<ul style="margin: 16px 0; padding-left: 22px; font-size: 15px; color: #334155;">${items}</ul>\n\n`;
+        });
+        html = html.replace(/(?:^[ \t]*\d+\.[ \t]+.+(?:\r?\n|$))+/gm, (block) => {
+            const items = block
+                .trim()
+                .split(/\r?\n/)
+                .map(l => l.replace(/^[ \t]*\d+\.[ \t]+/, "").trim())
+                .filter(Boolean)
+                .map(it => `<li style="margin: 8px 0; line-height: 1.75;">${it}</li>`)
+                .join("");
+            return `\n\n<ol style="margin: 16px 0; padding-left: 22px; font-size: 15px; color: #334155;">${items}</ol>\n\n`;
+        });
         html = html.replace(/^---$/gim, `
             <div style="margin: 32px auto; height: 1px; background: #e2e8f0; width: 90%;"></div>
         `);
@@ -904,11 +930,180 @@ class ThemeEngine {
         const finalHtml = paragraphs.map(p => {
             const trimmed = p.trim();
             if (!trimmed) return "";
-            if (trimmed.startsWith("<div") || trimmed.startsWith("<pre") || trimmed.startsWith("<p")) return trimmed;
+            if (/^<(?:div|pre|p|blockquote|ul|ol)\b/i.test(trimmed)) return trimmed;
             return `<p style="margin: 16px 0; font-size: 15px; line-height: 1.8; color: #334155; text-align: justify; letter-spacing: 0.3px;">${trimmed}</p>`;
         }).join("\n");
 
         return `<div style="max-width: 680px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; color: #334155;">${finalHtml}</div>`;
+    }
+
+    static formatSemanticInline(text) {
+        if (!text) return "";
+        const tokens = [];
+        const saveToken = (htmlFrag) => {
+            const tok = `\u0000TOK_${tokens.length}\u0000`;
+            tokens.push(htmlFrag);
+            return tok;
+        };
+        let s = text.replace(/`([^`]+)`/g, (_, c) => saveToken(`<code>${this.escapeHtml(c)}</code>`));
+        s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, src) => {
+            const isGen = this.isGenericAlt(alt, src);
+            const cleanAlt = isGen ? "" : this.escapeHtml(alt);
+            return saveToken(`<img src="${this.escapeHtml(src)}" alt="${cleanAlt}" />`);
+        });
+        s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+            return saveToken(`<a href="${this.escapeHtml(url)}">${this.escapeHtml(label)}</a>`);
+        });
+        s = this.escapeHtml(s);
+        s = s.replace(/\*\*([^*]+)\*\*/g, `<strong>$1</strong>`);
+        s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, `$1<em>$2</em>`);
+        s = s.replace(/\u0000TOK_(\d+)\u0000/g, (_, idx) => tokens[Number(idx)] || "");
+        return s;
+    }
+
+    /**
+     * 生成面向知乎 / B站专栏 / 今日头条 / 飞书等富文本编辑器的标准语义化 HTML
+     * 确保 <blockquote>、<h2>/<h3>、<ul>/<ol>、<pre><code>、<hr>、<img> 被各平台编辑器 100% 原生识别
+     */
+    static async renderToSemanticHtml(markdown, dataDir = "") {
+        if (!markdown) return "";
+        let md = markdown.replace(/\r\n/g, "\n");
+
+        // 1. 提取代码块占位
+        const codeBlocks = [];
+        md = md.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+            const idx = codeBlocks.length;
+            codeBlocks.push({ lang: (lang || "").trim(), code: code.replace(/\n$/, "") });
+            return `\n\n@@METRIX_SEM_CODE_${idx}@@\n\n`;
+        });
+
+        // 2. 若仍有未转存外链的本地 assets 图片，兜底转为 Base64
+        const localImgRegex = /!\[([^\]]*)\]\((\.?[\\/]?assets\/[^)\s"]+)(?:\s+"[^"]*")?\)/g;
+        const localMatches = [];
+        let m;
+        while ((m = localImgRegex.exec(md)) !== null) {
+            localMatches.push({ full: m[0], alt: m[1], relPath: m[2] });
+        }
+        for (const item of localMatches) {
+            try {
+                const b64 = await this.resolveAssetBase64(item.relPath, dataDir);
+                if (b64) {
+                    const cleanAlt = this.isGenericAlt(item.alt, item.relPath) ? "" : item.alt;
+                    md = md.split(item.full).join(`![${cleanAlt}](${b64})`);
+                }
+            } catch (e) {}
+        }
+
+        const lines = md.split("\n");
+        const out = [];
+        let i = 0;
+
+        while (i < lines.length) {
+            const rawLine = lines[i];
+            const trimmed = rawLine.trim();
+
+            if (!trimmed) {
+                i++;
+                continue;
+            }
+
+            // 代码块占位
+            const codeMatch = trimmed.match(/^@@METRIX_SEM_CODE_(\d+)@@$/);
+            if (codeMatch) {
+                const cb = codeBlocks[Number(codeMatch[1])];
+                if (cb) {
+                    const langAttr = cb.lang ? ` class="language-${this.escapeHtml(cb.lang)}"` : "";
+                    out.push(`<pre><code${langAttr}>${this.escapeHtml(cb.code)}</code></pre>`);
+                }
+                i++;
+                continue;
+            }
+
+            // 分割线
+            if (/^(?:---|\*\*\*|___)$/.test(trimmed)) {
+                out.push(`<hr />`);
+                i++;
+                continue;
+            }
+
+            // 标题 H1~H4
+            const hMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+            if (hMatch) {
+                const lvl = hMatch[1].length;
+                out.push(`<h${lvl}>${this.formatSemanticInline(hMatch[2].trim())}</h${lvl}>`);
+                i++;
+                continue;
+            }
+
+            // 独立图片行
+            const imgMatch = trimmed.match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)(?:\s+"[^"]*")?\)$/);
+            if (imgMatch) {
+                const altRaw = imgMatch[1] || "";
+                const src = imgMatch[2];
+                const cleanAlt = this.isGenericAlt(altRaw, src) ? "" : this.escapeHtml(altRaw);
+                out.push(`<p><img src="${src}" alt="${cleanAlt}" /></p>`);
+                i++;
+                continue;
+            }
+
+            // 引用块（连续 > 行合并为同一个原生 <blockquote>，内部换行用 <br />，兼容知乎 DraftJS 与 ProseMirror）
+            if (/^>\s?/.test(trimmed)) {
+                const qLines = [];
+                while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+                    const qText = lines[i].trim().replace(/^>\s?/, "").trim();
+                    if (qText) {
+                        qLines.push(this.formatSemanticInline(qText));
+                    }
+                    i++;
+                }
+                if (qLines.length > 0) {
+                    out.push(`<blockquote>${qLines.join("<br />")}</blockquote>`);
+                }
+                continue;
+            }
+
+            // 无序列表
+            if (/^[-*+]\s+/.test(trimmed)) {
+                const items = [];
+                while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
+                    const itemTxt = lines[i].trim().replace(/^[-*+]\s+/, "").trim();
+                    items.push(`<li>${this.formatSemanticInline(itemTxt)}</li>`);
+                    i++;
+                }
+                out.push(`<ul>${items.join("")}</ul>`);
+                continue;
+            }
+
+            // 有序列表
+            if (/^\d+\.\s+/.test(trimmed)) {
+                const items = [];
+                while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+                    const itemTxt = lines[i].trim().replace(/^\d+\.\s+/, "").trim();
+                    items.push(`<li>${this.formatSemanticInline(itemTxt)}</li>`);
+                    i++;
+                }
+                out.push(`<ol>${items.join("")}</ol>`);
+                continue;
+            }
+
+            // 普通段落
+            const pLines = [];
+            while (
+                i < lines.length &&
+                lines[i].trim() &&
+                !/^(?:@@METRIX_SEM_CODE_\d+@@|---|\*\*\*|___|#{1,4}\s+|>\s?|[-*+]\s+|\d+\.\s+|!\[[^\]]*\]\((?:https?:\/\/|data:image\/))/.test(lines[i].trim())
+            ) {
+                pLines.push(this.formatSemanticInline(lines[i].trim()));
+                i++;
+            }
+            if (pLines.length > 0) {
+                out.push(`<p>${pLines.join("<br />")}</p>`);
+            } else {
+                i++;
+            }
+        }
+
+        return out.join("\n");
     }
 
     static escapeHtml(str) {
@@ -2249,47 +2444,50 @@ class MetrixPlugin extends siyuan.Plugin {
         // 4. 分支 A：调起浏览器伴侣分发其余社区平台
         if (companionPlatforms.length > 0) {
             let finalMarkdown = docData.markdown;
-            let companionHtml = inlineHtml;
             const bedType = isPro ? (this.config.imageBed?.type || "none") : "none";
             if (bedType !== "none" && docData.referencedAssets?.length > 0) {
                 try {
                     finalMarkdown = await this.uploadAssetsViaImageBed(docData.markdown, docData.referencedAssets, docData.dataDir, bedType);
-                    if (finalMarkdown !== docData.markdown) {
-                        companionHtml = await ThemeEngine.renderToInlineHtml(finalMarkdown, docData.dataDir);
-                    }
                 } catch (e) {
                     console.warn("[Metrix] 图床处理失败，自动保留原稿:", e);
                 }
             }
+            const companionHtml = await ThemeEngine.renderToSemanticHtml(finalMarkdown, docData.dataDir);
 
             const taskId = `task_${Date.now()}`;
             const taskToken = Math.random().toString(36).substring(2, 12);
 
             const assetsMap = new Map();
             assetsMap.set("cover", { filePath: null, buffer: coverBuffer, mimeType: "image/png" });
+            const coverBase64 = coverBuffer ? coverBuffer.toString("base64") : "";
             const assetsList = [];
 
             if (docData.referencedAssets.length > 0) {
                 for (let i = 0; i < docData.referencedAssets.length; i++) {
                     const item = docData.referencedAssets[i];
                     const assetId = `asset_${i + 1}`;
-                    let base64 = await ThemeEngine.resolveAssetBase64(item.relPath, docData.dataDir);
-                    if (base64 && base64.includes(",")) {
-                        base64 = base64.split(",")[1];
+                    let rawDataUrl = await ThemeEngine.resolveAssetBase64(item.relPath, docData.dataDir);
+                    let detectedMime = "image/png";
+                    let base64 = rawDataUrl;
+                    if (rawDataUrl && rawDataUrl.includes(",")) {
+                        const mimeMatch = rawDataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,/);
+                        if (mimeMatch) detectedMime = mimeMatch[1];
+                        base64 = rawDataUrl.split(",")[1];
                     }
                     if (fs && docData.dataDir) {
                         const diskPath = path.join(docData.dataDir, item.relPath);
                         if (fs.existsSync(diskPath)) {
-                            assetsMap.set(assetId, { filePath: diskPath, buffer: null, mimeType: "image/png" });
+                            assetsMap.set(assetId, { filePath: diskPath, buffer: null, mimeType: detectedMime });
                         }
                     }
                     assetsList.push({
                         id: assetId,
                         relPath: item.relPath,
+                        uploadedUrl: item.uploadedUrl || "",
                         filename: item.filename || `${assetId}.png`,
                         alt: item.alt || "",
                         base64: base64 || null,
-                        mimeType: "image/png"
+                        mimeType: detectedMime
                     });
                 }
             }
@@ -2305,6 +2503,7 @@ class MetrixPlugin extends siyuan.Plugin {
                     digest: finalDigest,
                     tags: tagList,
                     coverAssetId: "cover",
+                    coverBase64,
                     assets: assetsList
                 },
                 platforms: companionPlatforms,
@@ -2434,6 +2633,8 @@ class MetrixPlugin extends siyuan.Plugin {
                         for (const [relPath, dPath] of assetPathMap.entries()) {
                             if (dPath === localDiskPath) {
                                 updatedMd = updatedMd.split(relPath).join(uploadedUrl);
+                                const matched = referencedAssets.find(a => a.relPath === relPath);
+                                if (matched) matched.uploadedUrl = uploadedUrl;
                             }
                         }
                     }
@@ -2483,6 +2684,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 const resJson = await resp.json();
                 const remoteUrl = resJson?.data?.url || resJson?.data?.display_url;
                 if (remoteUrl) {
+                    item.uploadedUrl = remoteUrl;
                     updatedMd = updatedMd.split(item.relPath).join(remoteUrl);
                     successCount++;
                 }
@@ -2538,6 +2740,7 @@ class MetrixPlugin extends siyuan.Plugin {
 
                 if (resp.ok) {
                     const cdnUrl = `https://gcore.jsdelivr.net/gh/${repo}@main/${remotePath}`;
+                    item.uploadedUrl = cdnUrl;
                     updatedMd = updatedMd.split(item.relPath).join(cdnUrl);
                     successCount++;
                 }

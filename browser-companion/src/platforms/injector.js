@@ -34,6 +34,19 @@
     const hostname = location.hostname;
     const article = currentTask.article;
 
+    // B站专栏已通过官方草稿 API 创建并跳转 ?aid=xxx 时，直接提示成功并回传状态，避免重复覆盖
+    if (hostname.includes("bilibili.com") && new URLSearchParams(location.search).get("aid")) {
+        const doneKey = `metrix_bili_done_${currentTask.taskId}`;
+        if (sessionStorage.getItem(doneKey) === "1") {
+            showMetrixToast("✅ Metrix: B站专栏图文草稿已保存就绪！", 4000);
+            chrome.runtime.sendMessage({
+                type: "PLATFORM_DRAFT_STATUS",
+                data: { platform: "bilibili", status: "success", draftUrl: location.href }
+            });
+            return;
+        }
+    }
+
     // 标题防空保底机制
     if (!article.title || !article.title.trim()) {
         const lines = (article.markdown || "").split(/\r?\n/);
@@ -72,12 +85,20 @@
 async function handlePageBridgeOrFallback(platformId, article, fallbackFn) {
     console.log(`[Metrix Injector] 请求 ${platformId} 原生页面桥接注入...`);
     try {
+        if (platformId === "bilibili") {
+            const storage = await chrome.storage.local.get("currentTask");
+            const tid = storage?.currentTask?.taskId;
+            if (tid) sessionStorage.setItem(`metrix_bili_done_${tid}`, "1");
+        }
         const res = await chrome.runtime.sendMessage({
             type: "FILL_PLATFORM_EDITOR",
             platformId,
             title: article.title,
             html: article.html,
             markdown: article.markdown,
+            digest: article.digest || "",
+            tags: article.tags || [],
+            coverBase64: article.coverBase64 || "",
             assets: article.assets || []
         });
 
@@ -85,7 +106,7 @@ async function handlePageBridgeOrFallback(platformId, article, fallbackFn) {
             console.log(`[Metrix Injector] ${platformId} 原生页面桥接注入成功:`, res.result);
             chrome.runtime.sendMessage({
                 type: "PLATFORM_DRAFT_STATUS",
-                data: { platform: platformId, status: "success", draftUrl: location.href }
+                data: { platform: platformId, status: "success", draftUrl: res.result.draftUrl || location.href }
             });
             return;
         }
@@ -100,6 +121,8 @@ async function handlePageBridgeOrFallback(platformId, article, fallbackFn) {
 function fillTextControl(element, text) {
     if (!element) return;
     if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
+        element.focus();
+        const prev = element.value;
         const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
         if (setter) {
@@ -107,7 +130,10 @@ function fillTextControl(element, text) {
         } else {
             element.value = text;
         }
-        element.dispatchEvent(new Event("input", { bubbles: true }));
+        if (element._valueTracker) {
+            try { element._valueTracker.setValue(prev === text ? "" : prev); } catch (e) {}
+        }
+        element.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
         element.dispatchEvent(new Event("change", { bubbles: true }));
         element.dispatchEvent(new Event("blur", { bubbles: true }));
     } else if (element.isContentEditable || element.getAttribute("contenteditable") === "true") {
@@ -122,7 +148,7 @@ function fillTextControl(element, text) {
         const inserted = document.execCommand("insertText", false, text);
         if (!inserted && !element.textContent.trim()) {
             element.textContent = text;
-            element.dispatchEvent(new Event("input", { bubbles: true }));
+            element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
             element.dispatchEvent(new Event("change", { bubbles: true }));
         }
     }
@@ -191,7 +217,8 @@ async function injectZhihuFallback(article) {
         recoverBtn?.click?.();
     } catch (e) {}
 
-    const titleArea = await waitForSelector("textarea[placeholder*='标题'], .WriteIndex-titleInput textarea, textarea.WriteIndex-titleInput", 8000);
+    const titleSel = ".WriteIndex-titleInput textarea, textarea.WriteIndex-titleInput, textarea[placeholder*='标题'], [class*='titleInput'] textarea, input[placeholder*='标题']";
+    const titleArea = await waitForSelector(titleSel, 8000);
     if (titleArea) {
         fillTextControl(titleArea, article.title);
     }
@@ -217,6 +244,10 @@ async function injectZhihuFallback(article) {
 
     setTimeout(() => {
         try {
+            const freshTitle = document.querySelector(titleSel);
+            if (freshTitle && !(freshTitle.value || "").trim()) {
+                fillTextControl(freshTitle, article.title);
+            }
             const ke = new KeyboardEvent("keydown", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: true, metaKey: true, bubbles: true });
             document.dispatchEvent(ke);
             const saveBtn = Array.from(document.querySelectorAll("button, a, [role='button']")).find(b => /保存草稿|保存/.test(b.innerText || ""));
@@ -272,6 +303,8 @@ async function injectCSDNFallback(article) {
 
     const editorArea = await waitForSelector("pre.editor__inner, .editor__inner[contenteditable='true'], .editor__inner, textarea.editor__inner", 8000);
     if (editorArea) {
+        await new Promise(r => setTimeout(r, 600));
+        editorArea.click?.();
         editorArea.focus();
         try {
             const sel = window.getSelection();
@@ -279,11 +312,21 @@ async function injectCSDNFallback(article) {
             range.selectNodeContents(editorArea);
             sel.removeAllRanges();
             sel.addRange(range);
+            document.execCommand("selectAll", false, null);
+            document.dispatchEvent(new Event("selectionchange"));
         } catch (e) {}
-
-        const dt = new DataTransfer();
-        dt.setData("text/plain", article.markdown);
-        editorArea.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+        await new Promise(r => setTimeout(r, 150));
+        document.execCommand("delete", false, null);
+        await new Promise(r => setTimeout(r, 100));
+        if ((editorArea.textContent || "").trim().length > 0) {
+            editorArea.textContent = "";
+        }
+        const inserted = document.execCommand("insertText", false, article.markdown);
+        if (!inserted || !(editorArea.textContent || "").includes(article.markdown.slice(0, 15))) {
+            const dt = new DataTransfer();
+            dt.setData("text/plain", article.markdown);
+            editorArea.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+        }
     }
 
     setTimeout(() => {

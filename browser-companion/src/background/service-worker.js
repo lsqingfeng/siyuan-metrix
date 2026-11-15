@@ -59,7 +59,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             target: { tabId },
             world: "MAIN",
             func: fillPlatformEditorInPage,
-            args: [message.platformId, message.title, message.html, message.markdown, message.assets || []]
+            args: [
+                message.platformId,
+                message.title,
+                message.html,
+                message.markdown,
+                message.assets || [],
+                {
+                    digest: message.digest || "",
+                    tags: message.tags || [],
+                    coverBase64: message.coverBase64 || ""
+                }
+            ]
         }).then(res => {
             const result = res && res[0] ? res[0].result : null;
             sendResponse({ ok: true, result });
@@ -140,7 +151,7 @@ async function handlePlatformStatus(data) {
 /**
  * 核心注入函数：在网页 MAIN world 中执行，享有原生 DOM 与页面内部 JS 实例的完整访问权
  */
-async function fillPlatformEditorInPage(platformId, title, html, markdown, assets = []) {
+async function fillPlatformEditorInPage(platformId, title, html, markdown, assets = [], meta = {}) {
     if (!title || !title.trim()) {
         const lines = (markdown || "").split(/\r?\n/);
         for (const l of lines) {
@@ -153,9 +164,68 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         if (!title) title = "精选技术笔记";
     }
 
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    const truncateChars = (str, limit) => {
+        const chars = Array.from((str || "").trim());
+        return chars.length <= limit ? chars.join("") : chars.slice(0, limit).join("");
+    };
+
+    function isVisibleControl(el) {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return false;
+        const st = window.getComputedStyle(el);
+        return st.display !== "none" && st.visibility !== "hidden";
+    }
+
+    function setReactControlValue(el, val) {
+        if (!el) return false;
+        try { el.click?.(); } catch (e) {}
+        try { el.focus?.(); } catch (e) {}
+
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+            const prev = el.value;
+            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            if (setter) {
+                setter.call(el, val);
+            } else {
+                el.value = val;
+            }
+            if (el._valueTracker) {
+                try {
+                    el._valueTracker.setValue(prev === val ? "" : prev);
+                } catch (e) {}
+            }
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: val }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.dispatchEvent(new Event("blur", { bubbles: true }));
+            return true;
+        }
+
+        if (el.isContentEditable || el.getAttribute("contenteditable") === "true") {
+            try {
+                const sel = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            } catch (e) {}
+            const ok = document.execCommand("insertText", false, val);
+            if (!ok || !(el.textContent || "").trim()) {
+                el.textContent = val;
+            }
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: val }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+        }
+        return false;
+    }
+
     function base64ToFile(base64Data, filename, mimeType = "image/png") {
         try {
-            const byteCharacters = atob(base64Data);
+            const cleanB64 = base64Data.includes(",") ? base64Data.split(",")[1] : base64Data;
+            const byteCharacters = atob(cleanB64);
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
                 byteNumbers[i] = byteCharacters.charCodeAt(i);
@@ -169,21 +239,13 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         }
     }
 
-    function fillInputs(selectors) {
+    function fillInputs(selectors, customVal = title) {
         for (let sel of selectors) {
             let el = document.querySelector(sel);
-            if (!el) continue;
-            let proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-            let setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            if (setter) {
-                setter.call(el, title);
-            } else {
-                el.value = title;
+            if (!el || !isVisibleControl(el)) continue;
+            if (setReactControlValue(el, customVal)) {
+                return el;
             }
-            el.dispatchEvent(new Event("input", { bubbles: true }));
-            el.dispatchEvent(new Event("change", { bubbles: true }));
-            el.dispatchEvent(new Event("blur", { bubbles: true }));
-            return el;
         }
         return null;
     }
@@ -205,25 +267,13 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
                 "input[placeholder*='标题']",
                 "#txtTitle"
             ];
-            let titleEl = null;
             for (let sel of titleSelectors) {
                 let el = document.querySelector(sel);
-                if (el) {
-                    titleEl = el;
-                    break;
+                if (el && isVisibleControl(el)) {
+                    setReactControlValue(el, truncateChars(title, 100));
+                    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, which: 13, bubbles: true }));
+                    return el;
                 }
-            }
-            if (titleEl) {
-                titleEl.focus();
-                let proto = HTMLInputElement.prototype;
-                let setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-                if (setter) setter.call(titleEl, title);
-                else titleEl.value = title;
-                titleEl.dispatchEvent(new Event("input", { bubbles: true }));
-                titleEl.dispatchEvent(new Event("change", { bubbles: true }));
-                titleEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, which: 13, bubbles: true }));
-                titleEl.dispatchEvent(new Event("blur", { bubbles: true }));
-                return titleEl;
             }
             return null;
         };
@@ -250,9 +300,42 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
                     window.dispatchEvent(ke);
                 } catch (e) {}
             };
-            setTimeout(doSave, 800);
-            setTimeout(doSave, 2000);
+            setTimeout(doSave, 900);
+            setTimeout(doSave, 2200);
             setTimeout(doSave, 3800);
+        };
+
+        let stripCsdnWelcomeBoilerplate = (rawText) => {
+            if (!rawText) return "";
+            const markers = [
+                "@[TOC](这里写自定义目录标题)",
+                "# 欢迎使用Markdown编辑器",
+                "你好！ 这是你第一次使用 **Markdown编辑器**"
+            ];
+            let cleaned = rawText;
+            for (const mk of markers) {
+                const idx = cleaned.indexOf(mk);
+                if (idx !== -1) {
+                    cleaned = cleaned.slice(0, idx).trimEnd();
+                }
+            }
+            return cleaned;
+        };
+
+        let findCleditInstance = (el) => {
+            try {
+                if (window.cledit && typeof window.cledit.setContent === "function") return window.cledit;
+                let cur = el;
+                while (cur) {
+                    const v = cur.__vue__;
+                    if (v) {
+                        if (v.cledit && typeof v.cledit.setContent === "function") return v.cledit;
+                        if (v.editor && v.editor.cledit && typeof v.editor.cledit.setContent === "function") return v.editor.cledit;
+                    }
+                    cur = cur.parentElement;
+                }
+            } catch (e) {}
+            return null;
         };
 
         let deadline = Date.now() + 15000;
@@ -263,11 +346,28 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             cmEl = document.querySelector(".CodeMirror");
             editorEl = document.querySelector("pre.editor__inner, .editor__inner[contenteditable='true'], .editor__inner");
             if (cmEl?.CodeMirror || editorEl) break;
-            await new Promise(res => setTimeout(res, 250));
+            await sleep(250);
+        }
+
+        // 等待 CSDN 新建文章异步加载完默认的「# 欢迎使用Markdown编辑器」模板后再清空覆盖，杜绝先粘贴后被追加模板
+        if (!location.search.includes("articleId")) {
+            const hydrateWait = Date.now() + 1800;
+            while (Date.now() < hydrateWait) {
+                const curTxt = cmEl?.CodeMirror?.getValue?.() || editorEl?.textContent || "";
+                if (curTxt.includes("欢迎使用Markdown编辑器") || curTxt.length > 30) {
+                    await sleep(180);
+                    break;
+                }
+                await sleep(150);
+            }
         }
 
         if (cmEl?.CodeMirror && typeof cmEl.CodeMirror.setValue === "function") {
             cmEl.CodeMirror.setValue(markdown);
+            await sleep(500);
+            if ((cmEl.CodeMirror.getValue() || "").includes("欢迎使用Markdown编辑器")) {
+                cmEl.CodeMirror.setValue(markdown);
+            }
             cmEl.CodeMirror.focus?.();
             fillTitle();
             triggerSaveDraft();
@@ -275,24 +375,77 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         }
 
         if (editorEl) {
-            editorEl.focus();
-            try {
-                let sel = window.getSelection();
-                let range = document.createRange();
-                range.selectNodeContents(editorEl);
-                sel.removeAllRanges();
-                sel.addRange(range);
-            } catch (e) {}
+            const cleditInst = findCleditInstance(editorEl);
+            const wipeAndWriteCledit = async () => {
+                if (cleditInst) {
+                    try {
+                        cleditInst.setContent(markdown);
+                        await sleep(250);
+                        if (!(editorEl.textContent || "").includes("欢迎使用Markdown编辑器") && (editorEl.textContent || "").includes(markdown.slice(0, 15))) {
+                            return;
+                        }
+                    } catch (e) {}
+                }
 
-            let dt = new DataTransfer();
-            dt.setData("text/plain", markdown);
-            dt.setData("Text", markdown);
-            editorEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
-
-            if (!(editorEl.textContent || "").includes(markdown.slice(0, 20))) {
+                // 强制全选并等待 selectionchange 让 cledit.selectionMgr 同步完整区间后再彻底删除旧占位内容
+                editorEl.click?.();
+                editorEl.focus();
+                try {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(editorEl);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                } catch (e) {}
                 document.execCommand("selectAll", false, null);
-                document.execCommand("insertText", false, markdown);
+                document.dispatchEvent(new Event("selectionchange"));
+                await sleep(150);
+
+                document.execCommand("delete", false, null);
+                await sleep(100);
+
+                if ((editorEl.textContent || "").trim().length > 0) {
+                    try {
+                        const sel = window.getSelection();
+                        const range = document.createRange();
+                        range.selectNodeContents(editorEl);
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                        document.dispatchEvent(new Event("selectionchange"));
+                        await sleep(80);
+                        document.execCommand("insertText", false, "");
+                    } catch (e) {}
+                    if ((editorEl.textContent || "").trim().length > 0) {
+                        editorEl.textContent = "";
+                        editorEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+                    }
+                    await sleep(100);
+                }
+
+                editorEl.focus();
+                const inserted = document.execCommand("insertText", false, markdown);
+                if (!inserted || !(editorEl.textContent || "").includes(markdown.slice(0, 15))) {
+                    const dt = new DataTransfer();
+                    dt.setData("text/plain", markdown);
+                    dt.setData("Text", markdown);
+                    editorEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+                }
+            };
+
+            await wipeAndWriteCledit();
+
+            // 二次哨兵巡检：若 CSDN 延迟水合把「# 欢迎使用Markdown编辑器」拼在尾部，立即精准切除重写
+            await sleep(550);
+            const afterTxt = editorEl.textContent || "";
+            if (afterTxt.includes("欢迎使用Markdown编辑器") || afterTxt.includes("@[TOC](这里写自定义目录标题)")) {
+                const pureMd = stripCsdnWelcomeBoilerplate(markdown) || markdown;
+                if (cleditInst) {
+                    try { cleditInst.setContent(pureMd); } catch (e) {}
+                } else {
+                    await wipeAndWriteCledit();
+                }
             }
+
             fillTitle();
             triggerSaveDraft();
             return { ok: true, editor: "csdn-cleditor" };
@@ -302,36 +455,33 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
 
     // 2. 稀土掘金 (https://juejin.cn/editor/drafts/*)
     if (platformId === "juejin") {
+        const juejinTitle = truncateChars(title, 80);
         fillInputs([
             "input.title-input",
             "input[placeholder='输入文章标题...']",
             "textarea.title-input",
             "input[placeholder*='文章标题']"
-        ]);
+        ], juejinTitle);
 
         let deadline = Date.now() + 15000;
         let cmEl = null;
         for (; Date.now() < deadline;) {
             cmEl = document.querySelector(".CodeMirror");
             if (cmEl?.CodeMirror && typeof cmEl.CodeMirror.setValue === "function") break;
-            await new Promise(res => setTimeout(res, 250));
+            await sleep(250);
         }
 
         if (cmEl?.CodeMirror) {
             cmEl.CodeMirror.setValue(markdown);
             cmEl.CodeMirror.focus?.();
-            fillInputs(["input.title-input", "textarea.title-input", "input[placeholder*='文章标题']"]);
+            fillInputs(["input.title-input", "textarea.title-input", "input[placeholder*='文章标题']"], juejinTitle);
             return { ok: true, editor: "codemirror" };
         }
 
         let ta = document.querySelector(".bytemd-editor textarea, textarea.editor");
         if (ta) {
-            let proto = HTMLTextAreaElement.prototype;
-            let setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            if (setter) setter.call(ta, markdown);
-            else ta.value = markdown;
-            ta.dispatchEvent(new Event("input", { bubbles: true }));
-            ta.dispatchEvent(new Event("change", { bubbles: true }));
+            setReactControlValue(ta, markdown);
+            fillInputs(["input.title-input", "textarea.title-input", "input[placeholder*='文章标题']"], juejinTitle);
             return { ok: true, editor: "textarea" };
         }
         throw new Error("稀土掘金编辑器未找到 CodeMirror 实例");
@@ -345,44 +495,58 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             restoreBtn?.click?.();
         } catch (err) {}
 
-        let titleSelectors = [
-            "textarea[placeholder*='请输入标题']",
-            "textarea[placeholder*='标题']",
-            ".WriteIndex-titleInput textarea",
-            "textarea.WriteIndex-titleInput",
-            ".WriteIndex-titleInput",
-            "input[placeholder*='标题']",
-            "textarea"
-        ];
-        let titleEl = null;
-        for (let sel of titleSelectors) {
-            let el = document.querySelector(sel);
-            if (el) {
-                titleEl = el;
-                break;
+        const zhihuTitle = truncateChars(title, 100);
+        const findZhihuTitleEl = () => {
+            // 严格匹配真正的 input / textarea / contenteditable 控件，禁止误中 .WriteIndex-titleInput 外层 label/div
+            const selectors = [
+                ".WriteIndex-titleInput textarea",
+                "textarea.WriteIndex-titleInput",
+                "textarea[placeholder*='请输入标题']",
+                "textarea[placeholder*='标题']",
+                "[class*='titleInput'] textarea",
+                "[class*='TitleInput'] textarea",
+                "input[placeholder*='请输入标题']",
+                "input[placeholder*='标题']",
+                ".WriteIndex-titleInput [contenteditable='true']",
+                "[class*='titleInput'] [contenteditable='true']",
+                "[class*='TitleInput'] [contenteditable='true']"
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el && isVisibleControl(el)) return el;
             }
-        }
-        if (titleEl) {
-            titleEl.focus();
-            let proto = titleEl instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-            let setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            if (setter) setter.call(titleEl, title);
-            else titleEl.value = title;
-            titleEl.dispatchEvent(new Event("input", { bubbles: true }));
-            titleEl.dispatchEvent(new Event("change", { bubbles: true }));
-            titleEl.dispatchEvent(new Event("blur", { bubbles: true }));
-        }
+            return null;
+        };
 
+        // 同时轮询等待标题框与正文编辑器挂载完毕（解决 SPA 初始帧 titleEl 为 null 的问题）
         let deadline = Date.now() + 15000;
+        let titleEl = null;
         let editorEl = null;
         for (; Date.now() < deadline;) {
-            editorEl = document.querySelector(".public-DraftEditor-content[contenteditable='true'], div[data-contents='true'], .ProseMirror[contenteditable='true'], div[contenteditable='true'][role='textbox'], div[contenteditable='true']");
-            if (editorEl) break;
-            await new Promise(res => setTimeout(res, 250));
+            if (!titleEl) titleEl = findZhihuTitleEl();
+            if (!editorEl) {
+                editorEl = document.querySelector(
+                    ".public-DraftEditor-content[contenteditable='true'], " +
+                    ".ProseMirror[contenteditable='true'], " +
+                    "div[data-contents='true'], " +
+                    "div[contenteditable='true'][role='textbox']"
+                );
+            }
+            if (titleEl && editorEl) break;
+            await sleep(220);
         }
 
+        if (!editorEl) {
+            editorEl = document.querySelector("div[contenteditable='true']");
+        }
         if (!editorEl) throw new Error("知乎页面未找到正文编辑器");
 
+        if (titleEl) {
+            setReactControlValue(titleEl, zhihuTitle);
+            await sleep(250);
+        }
+
+        editorEl.click?.();
         editorEl.focus();
         try {
             let sel = window.getSelection();
@@ -398,27 +562,31 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         let pasteEvt = new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt });
         editorEl.dispatchEvent(pasteEvt);
 
-        await new Promise(res => setTimeout(res, 600));
+        await sleep(650);
 
         let currentLen = (editorEl.textContent || "").trim().length;
         if (currentLen < 50) {
             let rootEl = editorEl.closest(".DraftEditor-root") || editorEl.parentElement || editorEl;
             rootEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt }));
-            await new Promise(res => setTimeout(res, 600));
-            currentLen = (editorEl.textContent || "").trim().length;
+            await sleep(650);
         }
 
-        if (titleEl && !titleEl.value && !titleEl.textContent.trim()) {
-            titleEl.focus();
-            let proto = titleEl instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-            let setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            if (setter) setter.call(titleEl, title);
-            else titleEl.value = title;
-            titleEl.dispatchEvent(new Event("input", { bubbles: true }));
-        }
+        // 粘贴正文会触发知乎新建草稿 (/write -> /p/xxx/edit) 重渲染，必须重新查询最新标题节点并二次锁定标题！
+        const ensureZhihuTitle = () => {
+            const curTitleEl = findZhihuTitleEl() || titleEl;
+            if (!curTitleEl) return;
+            const curVal = (curTitleEl.value !== undefined ? curTitleEl.value : curTitleEl.textContent || "").trim();
+            if (curVal !== zhihuTitle) {
+                setReactControlValue(curTitleEl, zhihuTitle);
+            }
+        };
+        ensureZhihuTitle();
+        setTimeout(ensureZhihuTitle, 600);
+        setTimeout(ensureZhihuTitle, 1400);
 
         let triggerZhihuSave = () => {
             try {
+                ensureZhihuTitle();
                 for (let el of [editorEl, document, window]) {
                     let ke = new KeyboardEvent("keydown", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: true, metaKey: true, bubbles: true, cancelable: true });
                     el?.dispatchEvent?.(ke);
@@ -433,15 +601,141 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
                 }
             } catch (e) {}
         };
-        triggerZhihuSave();
         setTimeout(triggerZhihuSave, 800);
         setTimeout(triggerZhihuSave, 2000);
 
-        return { ok: true, editor: "zhihu-draftjs", length: (editorEl.textContent || "").trim().length };
+        return { ok: true, editor: "zhihu-editor", length: (editorEl.textContent || "").trim().length };
     }
 
     // 4. B站专栏 (https://member.bilibili.com/york/read-editor)
     if (platformId === "bilibili") {
+        const biliTitle = truncateChars(title, 40);
+        const getCookie = (name) => {
+            const item = document.cookie.split(";").map(s => s.trim()).find(s => s.startsWith(name + "="));
+            return item ? item.slice(name.length + 1) : "";
+        };
+        const biliJct = getCookie("bili_jct");
+
+        const uploadBlobToBfs = async (blob, filename = "image.png") => {
+            if (!biliJct || !blob) return null;
+            const fd = new FormData();
+            fd.append("file_up", blob, filename);
+            fd.append("biz", "new_dyn");
+            fd.append("category", "daily");
+            fd.append("csrf", biliJct);
+            const resp = await fetch("https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs", {
+                method: "POST",
+                body: fd,
+                credentials: "include"
+            });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            if (data.code === 0 && data.data?.image_url) {
+                return String(data.data.image_url).replace(/^http:\/\//i, "https://");
+            }
+            return null;
+        };
+
+        // 将正文 HTML 中所有外链/本地图片先上传到 B站官方 BFS 图床 (hdslb.com)，根治「图片粘贴失败，请单独复制图片」
+        const doc = new DOMParser().parseFromString(html || "", "text/html");
+        const imgNodes = Array.from(doc.querySelectorAll("img"));
+        let assetCursor = 0;
+
+        for (const imgEl of imgNodes) {
+            const src = imgEl.getAttribute("src") || "";
+            if (src.includes("hdslb.com") || src.includes("bilibili.com")) continue;
+
+            let fileBlob = null;
+            let fileName = "metrix_img.png";
+
+            // 优先匹配思源随任务携带的内存 Base64（0 网络延迟，免疫第三方跨域限制）
+            let matchedAsset = assets.find(a =>
+                (a.uploadedUrl && a.uploadedUrl === src) ||
+                (a.filename && src.includes(a.filename))
+            );
+            if (!matchedAsset && assetCursor < assets.length) {
+                matchedAsset = assets[assetCursor++];
+            }
+
+            if (matchedAsset && matchedAsset.base64) {
+                fileName = matchedAsset.filename || "metrix_img.png";
+                fileBlob = base64ToFile(matchedAsset.base64, fileName, matchedAsset.mimeType || "image/png");
+            } else if (src.startsWith("data:image/")) {
+                fileBlob = base64ToFile(src, fileName, "image/png");
+            } else if (/^https?:\/\//i.test(src)) {
+                try {
+                    const r = await fetch(src);
+                    if (r.ok) fileBlob = await r.blob();
+                } catch (e) {}
+            }
+
+            if (fileBlob) {
+                try {
+                    const bfsUrl = await uploadBlobToBfs(fileBlob, fileName);
+                    if (bfsUrl) {
+                        imgEl.setAttribute("src", bfsUrl);
+                        imgEl.removeAttribute("srcset");
+                        continue;
+                    }
+                } catch (e) {
+                    console.warn("[Metrix] B站 BFS 单图上传异常:", e);
+                }
+            }
+            // 若未登录或上传失败，移除外部非 hdslb 域名防止触发红色感叹号报错占位
+            imgEl.remove();
+        }
+
+        const biliHtml = doc.body.innerHTML;
+
+        // 优先走 B站官方专栏草稿保存接口（支持标题、正文、摘要、2.35:1 封面与 BFS 图片一次性落库）
+        if (biliJct) {
+            try {
+                let bannerUrl = "";
+                if (meta.coverBase64) {
+                    const coverFile = base64ToFile(meta.coverBase64, "cover.png", "image/png");
+                    if (coverFile) {
+                        bannerUrl = (await uploadBlobToBfs(coverFile, "cover.png")) || "";
+                    }
+                }
+                const plainWords = (doc.body.textContent || "").trim().length;
+                const draftFd = new FormData();
+                draftFd.append("title", biliTitle);
+                draftFd.append("content", biliHtml);
+                draftFd.append("summary", meta.digest || "");
+                draftFd.append("banner_url", bannerUrl);
+                draftFd.append("words", String(plainWords));
+                draftFd.append("category", "17");
+                draftFd.append("list_id", "0");
+                draftFd.append("tid", "0");
+                draftFd.append("reprint", "0");
+                draftFd.append("tags", Array.isArray(meta.tags) && meta.tags.length ? meta.tags.join(",") : "技术,人工智能");
+                draftFd.append("image_urls", "");
+                draftFd.append("origin_image_urls", "");
+                draftFd.append("dynamic_intro", meta.digest || "");
+                draftFd.append("media_id", "0");
+                draftFd.append("spoiler", "0");
+                draftFd.append("original", "1");
+                draftFd.append("top_video_bvid", "");
+                draftFd.append("csrf", biliJct);
+
+                const draftResp = await fetch("https://api.bilibili.com/x/article/creative/draft/addupdate", {
+                    method: "POST",
+                    body: draftFd,
+                    credentials: "include"
+                });
+                if (draftResp.ok) {
+                    const draftJson = await draftResp.json();
+                    if (draftJson.code === 0 && draftJson.data?.aid !== undefined) {
+                        const draftUrl = `https://member.bilibili.com/york/read-editor?aid=${encodeURIComponent(String(draftJson.data.aid))}`;
+                        setTimeout(() => { location.replace(draftUrl); }, 120);
+                        return { ok: true, editor: "bilibili-draft-api", draftUrl };
+                    }
+                }
+            } catch (apiErr) {
+                console.warn("[Metrix] B站官方草稿 API 异常，自动切换编辑器粘贴兜底:", apiErr);
+            }
+        }
+
         let titleSelectors = [
             "textarea[placeholder*='请输入标题']",
             "textarea[placeholder*='标题']",
@@ -455,14 +749,14 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             "textarea",
             "input.title-input"
         ];
-        let titleEl = fillInputs(titleSelectors);
 
         let deadline = Date.now() + 15000;
         let editorEl = null;
         for (; Date.now() < deadline;) {
+            fillInputs(titleSelectors, biliTitle);
             editorEl = document.querySelector(".ProseMirror[contenteditable='true'], div[contenteditable='true'][role='textbox'], div[contenteditable='true'], .article-content div[contenteditable='true']");
             if (editorEl) break;
-            await new Promise(res => setTimeout(res, 250));
+            await sleep(250);
         }
 
         if (editorEl) {
@@ -476,11 +770,12 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             } catch (err) {}
 
             let dt = new DataTransfer();
-            dt.setData("text/html", html);
+            dt.setData("text/html", biliHtml);
             dt.setData("text/plain", markdown);
             let pasteEvt = new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt });
             editorEl.dispatchEvent(pasteEvt);
-            fillInputs(titleSelectors);
+            await sleep(400);
+            fillInputs(titleSelectors, biliTitle);
             return { ok: true, editor: "bilibili-prosemirror" };
         }
     }
