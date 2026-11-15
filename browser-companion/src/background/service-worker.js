@@ -322,15 +322,50 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             return cleaned;
         };
 
+        // 统一规范化换行符 \r\n -> \n，并确保连续 > 引用块的最后一行与后续非 > 正文行之间强制保留至少一个空行 \n\n（防止 CommonMark 懒引用延续）
+        let normalizeCsdnMarkdown = (md) => {
+            if (!md) return "";
+            let text = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+            text = text.replace(/(^>[^\n]*)(\n)(?!>|\n)/gm, "$1$2\n");
+            return text;
+        };
+        const cleanMd = normalizeCsdnMarkdown(markdown);
+
         let findCleditInstance = (el) => {
             try {
-                if (window.cledit && typeof window.cledit.setContent === "function") return window.cledit;
+                const isCledit = (o) => o && typeof o.setContent === "function" && typeof o.getContent === "function";
+                if (isCledit(window.cledit)) return window.cledit;
+
+                const seen = new WeakSet();
+                const searchObj = (obj, depth = 0) => {
+                    if (!obj || depth > 2 || typeof obj !== "object") return null;
+                    if (seen.has(obj)) return null;
+                    seen.add(obj);
+                    if (isCledit(obj)) return obj;
+                    for (const key of Object.keys(obj)) {
+                        try {
+                            const val = obj[key];
+                            if (isCledit(val)) return val;
+                            if (depth < 2 && val && typeof val === "object") {
+                                const found = searchObj(val, depth + 1);
+                                if (found) return found;
+                            }
+                        } catch (e) {}
+                    }
+                    return null;
+                };
+
                 let cur = el;
-                while (cur) {
-                    const v = cur.__vue__;
-                    if (v) {
-                        if (v.cledit && typeof v.cledit.setContent === "function") return v.cledit;
-                        if (v.editor && v.editor.cledit && typeof v.editor.cledit.setContent === "function") return v.editor.cledit;
+                while (cur && cur !== document.documentElement) {
+                    const roots = [
+                        cur.__vue__,
+                        cur.__vueParentComponent?.ctx,
+                        cur.__vueParentComponent?.exposed
+                    ].filter(Boolean);
+
+                    for (const root of roots) {
+                        const found = searchObj(root, 0);
+                        if (found) return found;
                     }
                     cur = cur.parentElement;
                 }
@@ -363,10 +398,10 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         }
 
         if (cmEl?.CodeMirror && typeof cmEl.CodeMirror.setValue === "function") {
-            cmEl.CodeMirror.setValue(markdown);
+            cmEl.CodeMirror.setValue(cleanMd);
             await sleep(500);
             if ((cmEl.CodeMirror.getValue() || "").includes("欢迎使用Markdown编辑器")) {
-                cmEl.CodeMirror.setValue(markdown);
+                cmEl.CodeMirror.setValue(cleanMd);
             }
             cmEl.CodeMirror.focus?.();
             fillTitle();
@@ -376,18 +411,8 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
 
         if (editorEl) {
             const cleditInst = findCleditInstance(editorEl);
-            const wipeAndWriteCledit = async () => {
-                if (cleditInst) {
-                    try {
-                        cleditInst.setContent(markdown);
-                        await sleep(250);
-                        if (!(editorEl.textContent || "").includes("欢迎使用Markdown编辑器") && (editorEl.textContent || "").includes(markdown.slice(0, 15))) {
-                            return;
-                        }
-                    } catch (e) {}
-                }
 
-                // 强制全选并等待 selectionchange 让 cledit.selectionMgr 同步完整区间后再彻底删除旧占位内容
+            const selectAllCledit = async (waitMs = 220) => {
                 editorEl.click?.();
                 editorEl.focus();
                 try {
@@ -399,56 +424,62 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
                 } catch (e) {}
                 document.execCommand("selectAll", false, null);
                 document.dispatchEvent(new Event("selectionchange"));
-                await sleep(150);
-
-                document.execCommand("delete", false, null);
-                await sleep(100);
-
-                if ((editorEl.textContent || "").trim().length > 0) {
-                    try {
-                        const sel = window.getSelection();
-                        const range = document.createRange();
-                        range.selectNodeContents(editorEl);
-                        sel.removeAllRanges();
-                        sel.addRange(range);
-                        document.dispatchEvent(new Event("selectionchange"));
-                        await sleep(80);
-                        document.execCommand("insertText", false, "");
-                    } catch (e) {}
-                    if ((editorEl.textContent || "").trim().length > 0) {
-                        editorEl.textContent = "";
-                        editorEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
-                    }
-                    await sleep(100);
-                }
-
-                editorEl.focus();
-                const inserted = document.execCommand("insertText", false, markdown);
-                if (!inserted || !(editorEl.textContent || "").includes(markdown.slice(0, 15))) {
-                    const dt = new DataTransfer();
-                    dt.setData("text/plain", markdown);
-                    dt.setData("Text", markdown);
-                    editorEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
-                }
+                editorEl.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+                editorEl.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+                await sleep(waitMs);
             };
 
-            await wipeAndWriteCledit();
+            const pasteToCledit = (text) => {
+                const dt = new DataTransfer();
+                dt.setData("text/plain", text);
+                dt.setData("Text", text);
+                editorEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+            };
 
-            // 二次哨兵巡检：若 CSDN 延迟水合把「# 欢迎使用Markdown编辑器」拼在尾部，立即精准切除重写
+            const wipeAndWriteCledit = async (text) => {
+                if (cleditInst) {
+                    try {
+                        cleditInst.setContent(text);
+                        await sleep(250);
+                        if (!(editorEl.textContent || "").includes("欢迎使用Markdown编辑器") && (editorEl.textContent || "").includes(text.slice(0, 15))) {
+                            return;
+                        }
+                    } catch (e) {}
+                }
+
+                // 未拿到 cleditInst 或 setContent 失败时，加固走 ClipboardEvent("paste") 主通道
+                await selectAllCledit(220);
+                pasteToCledit(text);
+            };
+
+            await wipeAndWriteCledit(cleanMd);
+
+            // 二次哨兵巡检：等待 550ms 若尾部仍残留 @[TOC](这里写自定义目录标题) 或 # 欢迎使用Markdown编辑器，再做一次覆盖重写
             await sleep(550);
-            const afterTxt = editorEl.textContent || "";
+            let afterTxt = editorEl.textContent || "";
             if (afterTxt.includes("欢迎使用Markdown编辑器") || afterTxt.includes("@[TOC](这里写自定义目录标题)")) {
-                const pureMd = stripCsdnWelcomeBoilerplate(markdown) || markdown;
+                const pureMd = stripCsdnWelcomeBoilerplate(cleanMd) || cleanMd;
                 if (cleditInst) {
                     try { cleditInst.setContent(pureMd); } catch (e) {}
                 } else {
-                    await wipeAndWriteCledit();
+                    await selectAllCledit(250);
+                    document.execCommand("delete", false, null);
+                    await sleep(120);
+                    pasteToCledit(pureMd);
                 }
+            }
+
+            // 校验换行符真实存在，杜绝坍缩
+            afterTxt = editorEl.textContent || "";
+            if (!afterTxt.includes("\n") && cleanMd.includes("\n")) {
+                console.warn("[Metrix-CSDN] Warning: newline missing in editorEl.textContent, retrying paste");
+                await selectAllCledit(220);
+                pasteToCledit(cleanMd);
             }
 
             fillTitle();
             triggerSaveDraft();
-            return { ok: true, editor: "csdn-cleditor" };
+            return { ok: true, editor: cleditInst ? "cledit-instance" : "csdn-cleditor" };
         }
         return null;
     }

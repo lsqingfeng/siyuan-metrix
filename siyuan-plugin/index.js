@@ -683,15 +683,24 @@ class DocParser {
         } catch (e) {}
 
         // 7. 剥离正文顶部的重复 H1 标题（各大平台已有独立标题栏，正文顶部无需再次出现大标题）
-        let finalBodyMd = cleanMd;
-        const firstH1Regex = /^\s*#\s+(.+?)[\r\n]+/;
-        const firstH1Match = finalBodyMd.match(firstH1Regex);
-        if (firstH1Match) {
-            const h1Text = firstH1Match[1].trim();
-            if (h1Text === detectedTitle.trim() || detectedTitle.includes(h1Text) || h1Text.includes(detectedTitle)) {
+        let finalBodyMd = (cleanMd || "").trim();
+        const firstH1Regex = /^\s*#\s+(.+?)(?:[\r\n]+|$)/;
+        let h1StripCount = 0;
+        while (h1StripCount < 3) {
+            const h1Match = finalBodyMd.match(firstH1Regex);
+            if (!h1Match) break;
+            const h1Text = h1Match[1].trim();
+            const isTitleMatch = !detectedTitle || h1Text === detectedTitle.trim() || detectedTitle.includes(h1Text) || h1Text.includes(detectedTitle);
+            if (isTitleMatch) {
                 finalBodyMd = finalBodyMd.replace(firstH1Regex, "").trim();
+                h1StripCount++;
+            } else {
+                break;
             }
         }
+
+        // 8. 规范化引用块与后续普通正文之间的空行，防止 CommonMark 懒引用延续导致正文全部坍缩进引用框
+        finalBodyMd = finalBodyMd.replace(/(^>[^\r\n]*)(\r?\n)(?!>|\r?\n)/gm, "$1$2\n");
 
         return { docId: realDocId, boxId, hpath, title: detectedTitle, digest, markdown: finalBodyMd, referencedAssets, dataDir };
     }
