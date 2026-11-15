@@ -4,6 +4,7 @@ const siyuan = require("siyuan");
 
 // 安全获取 Node 原生模块 (兼容 Electron 渲染进程环境)
 let http = null;
+let https = null;
 let fs = null;
 let path = null;
 let nodeCrypto = null;
@@ -11,6 +12,7 @@ let os = null;
 try {
     const req = typeof window !== "undefined" && window.require ? window.require : require;
     http = req("http");
+    https = req("https");
     fs = req("fs");
     path = req("path");
     nodeCrypto = req("crypto");
@@ -19,9 +21,11 @@ try {
     console.warn("[Metrix] Node 原生模块加载提示:", e);
 }
 
-// 商用售卖购买落地页地址 (正式上架爱发电/Gumroad后修改此单行常量即可)
-const PURCHASE_PRO_URL = "https://afdian.com/a/lsqingfeng";
+// 商用售卖购买落地页地址 (爱发电单品自动发卡直达链接)
+const PURCHASE_PRO_URL = "https://afdian.com/item/e617d03cddba11f1bb3552540025c377";
 const FREE_DEFAULT_CAPSULE = "【深度技术剖析 · 生产实战】";
+const FREE_MAX_PLATFORMS = 1;
+const FREE_DAILY_LIMIT = 3;
 
 /**
  * 1. MatrixBridgeServer: 纯 Node.js 本地私有 HTTP 桥接服务
@@ -999,6 +1003,288 @@ MCowBQYDK2VwAyEAb9NSWKk5qMrL7PVImBr5epX93uFzyRhk5uEqIQSKwpw=
     }
 }
 
+/**
+ * 5.5 WeChatOfficialApi: 微信公众号官方草稿箱 API 直连引擎 (AppID + AppSecret)
+ * 采用 Node.js 原生 https (agent: false 绕过系统代理防动态 IP 触发 40164 白名单报错) + 思源内核 forwardProxy 双通道兜底
+ */
+class WeChatOfficialApi {
+    static tokenCache = {
+        appId: "",
+        accessToken: "",
+        expiresAt: 0
+    };
+
+    static formatWeChatError(errcode, errmsg = "") {
+        const msg = String(errmsg || "unknown error");
+        if (errcode === 40164) {
+            const ipMatch = msg.match(/invalid ip\s+([0-9a-fA-F.:]+)/i);
+            const ipHint = ipMatch ? `（检测到出口 IP: ${ipMatch[1]}）` : "";
+            return `IP 白名单拦截 [40164]${ipHint}：请前往「微信公众平台 -> 设置与开发 -> 基本配置 -> IP白名单」添加本机公网 IP`;
+        }
+        if (errcode === 40013) return "AppID 无效 [40013]：请检查公众号 AppID 是否填写正确（如 wx 开头 18 位字符）";
+        if (errcode === 40125 || errcode === 40001) return `AppSecret 校验失败 [${errcode}]：请检查开发者密码是否与后台一致`;
+        if (errcode === 48001) return "接口未授权 [48001]：当前公众号暂未开通素材或草稿箱 API 权限";
+        if (errcode === 45009) return "接口调用频次超限 [45009]：已达微信公众平台日调用上限";
+        return `微信公众平台接口返回错误 [${errcode}]: ${msg}`;
+    }
+
+    static requestRaw({ method = "GET", apiPath, headers = {}, bodyBuffer = null, timeoutMs = 30000 }) {
+        // 优先走 Node 原生 https 直连（无视浏览器 CORS 且强制 agent:false 旁路本地 VPN 代理）
+        if (https) {
+            return new Promise((resolve, reject) => {
+                const reqHeaders = Object.assign({}, headers);
+                if (bodyBuffer) {
+                    reqHeaders["Content-Length"] = bodyBuffer.length;
+                }
+                const req = https.request(
+                    {
+                        hostname: "api.weixin.qq.com",
+                        port: 443,
+                        path: apiPath,
+                        method,
+                        headers: reqHeaders,
+                        agent: false
+                    },
+                    (res) => {
+                        const chunks = [];
+                        res.on("data", (c) => chunks.push(c));
+                        res.on("end", () => {
+                            const rawText = Buffer.concat(chunks).toString("utf8");
+                            try {
+                                resolve(JSON.parse(rawText));
+                            } catch (e) {
+                                reject(new Error(`微信接口响应解析异常: ${rawText.slice(0, 180)}`));
+                            }
+                        });
+                    }
+                );
+                req.setTimeout(timeoutMs, () => {
+                    req.destroy(new Error("请求微信官方服务器超时，请检查网络连接"));
+                });
+                req.on("error", (err) => reject(err));
+                if (bodyBuffer) req.write(bodyBuffer);
+                req.end();
+            });
+        }
+
+        // 浏览器窗口模式降级：对非二进制请求调用思源内核 forwardProxy
+        return (async () => {
+            const targetUrl = `https://api.weixin.qq.com${apiPath}`;
+            const headerList = Object.entries(headers).map(([k, v]) => ({ [k]: v }));
+            const proxyRes = await fetch("/api/network/forwardProxy", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    url: targetUrl,
+                    method,
+                    timeout: timeoutMs,
+                    contentType: headers["Content-Type"] || "application/json",
+                    headers: headerList,
+                    payload: bodyBuffer ? bodyBuffer.toString("utf8") : ""
+                })
+            });
+            const proxyJson = await proxyRes.json();
+            const rawBody = proxyJson?.data?.body || "";
+            return JSON.parse(rawBody);
+        })();
+    }
+
+    static buildMultipartBuffer(fileBuffer, filename = "cover.png", mimeType = "image/png", fieldName = "media") {
+        const boundary = "----MetrixWeChatForm" + Date.now().toString(16) + Math.random().toString(16).slice(2, 8);
+        const safeName = String(filename || "image.png").replace(/["\r\n]/g, "_");
+        const head = Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="${fieldName}"; filename="${safeName}"\r\n` +
+            `Content-Type: ${mimeType}\r\n\r\n`,
+            "utf8"
+        );
+        const tail = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+        return {
+            boundary,
+            bodyBuffer: Buffer.concat([head, Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer), tail])
+        };
+    }
+
+    static async getAccessToken(appId, appSecret, forceRefresh = false) {
+        const cleanId = String(appId || "").trim();
+        const cleanSecret = String(appSecret || "").trim();
+        if (!cleanId || !cleanSecret) {
+            throw new Error("请先在「设置 -> 微信公众号」填写 AppID 与 AppSecret");
+        }
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (
+            !forceRefresh &&
+            this.tokenCache.appId === cleanId &&
+            this.tokenCache.accessToken &&
+            this.tokenCache.expiresAt > nowSec + 120
+        ) {
+            return this.tokenCache.accessToken;
+        }
+
+        const q = `/cgi-bin/token?grant_type=client_credential&appid=${encodeURIComponent(cleanId)}&secret=${encodeURIComponent(cleanSecret)}`;
+        const resp = await this.requestRaw({ method: "GET", apiPath: q });
+        if (!resp || !resp.access_token) {
+            throw new Error(this.formatWeChatError(resp?.errcode ?? -1, resp?.errmsg));
+        }
+
+        const expiresIn = Number(resp.expires_in) || 7200;
+        this.tokenCache = {
+            appId: cleanId,
+            accessToken: resp.access_token,
+            expiresAt: nowSec + expiresIn
+        };
+        return resp.access_token;
+    }
+
+    static async uploadPermanentCover(token, coverBuffer) {
+        if (!https || typeof Buffer === "undefined") {
+            throw new Error("当前运行环境不支持二进制素材直传，请在思源桌面端使用微信公众号直连");
+        }
+        const { boundary, bodyBuffer } = this.buildMultipartBuffer(coverBuffer, "cover.png", "image/png", "media");
+        const resp = await this.requestRaw({
+            method: "POST",
+            apiPath: `/cgi-bin/material/add_material?access_token=${encodeURIComponent(token)}&type=image`,
+            headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+            bodyBuffer,
+            timeoutMs: 40000
+        });
+        if (!resp || !resp.media_id) {
+            const err = new Error(this.formatWeChatError(resp?.errcode ?? -1, resp?.errmsg || "封面上传失败"));
+            err.errcode = resp?.errcode;
+            throw err;
+        }
+        return resp.media_id;
+    }
+
+    static async uploadContentImage(token, imgBuffer, ext = "png") {
+        const cleanExt = ext === "jpg" ? "jpeg" : (ext || "png");
+        const mimeType = `image/${cleanExt}`;
+        const { boundary, bodyBuffer } = this.buildMultipartBuffer(imgBuffer, `article_img.${ext || "png"}`, mimeType, "media");
+        const resp = await this.requestRaw({
+            method: "POST",
+            apiPath: `/cgi-bin/media/uploadimg?access_token=${encodeURIComponent(token)}`,
+            headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+            bodyBuffer,
+            timeoutMs: 40000
+        });
+        if (resp && resp.url) {
+            return resp.url;
+        }
+        throw new Error(this.formatWeChatError(resp?.errcode ?? -1, resp?.errmsg || "正文图片上传失败"));
+    }
+
+    static async sanitizeHtmlImagesForWeChat(html, token) {
+        if (!html || typeof Buffer === "undefined") return html;
+        const dataImgRegex = /(<img[^>]+src=["'])(data:image\/([a-zA-Z0-9+]+);base64,([^"']+))(["'][^>]*>)/gi;
+        const matches = [];
+        let m;
+        while ((m = dataImgRegex.exec(html)) !== null) {
+            matches.push({
+                fullDataUri: m[2],
+                ext: (m[3] || "png").replace("+xml", ""),
+                b64: m[4]
+            });
+        }
+        let outHtml = html;
+        for (const item of matches) {
+            try {
+                if (item.ext.toLowerCase() === "svg") continue;
+                const buf = Buffer.from(item.b64, "base64");
+                const wxUrl = await this.uploadContentImage(token, buf, item.ext);
+                if (wxUrl) {
+                    outHtml = outHtml.split(item.fullDataUri).join(wxUrl);
+                }
+            } catch (e) {
+                console.warn("[Metrix] 公众号正文内嵌图上传跳过:", e);
+            }
+        }
+
+        // 转存非微信官方域名的外链图片，避免公众号草稿箱防盗链过滤
+        const remoteImgRegex = /<img[^>]+src=["'](https?:\/\/[^"'\s]+)["'][^>]*>/gi;
+        const remoteUrls = new Set();
+        let rm;
+        while ((rm = remoteImgRegex.exec(outHtml)) !== null) {
+            const url = rm[1];
+            if (url && !/qpic\.cn|qlogo\.cn|weixin\.qq\.com/i.test(url)) {
+                remoteUrls.add(url);
+            }
+        }
+        for (const remoteUrl of remoteUrls) {
+            try {
+                if (typeof fetch === "function") {
+                    const r = await fetch(remoteUrl);
+                    if (r.ok) {
+                        const ct = (r.headers.get("content-type") || "image/png").toLowerCase();
+                        if (!ct.includes("svg")) {
+                            const ext = ct.includes("jpeg") || ct.includes("jpg") ? "jpg" : "png";
+                            const arrBuf = await r.arrayBuffer();
+                            const wxUrl = await this.uploadContentImage(token, Buffer.from(arrBuf), ext);
+                            if (wxUrl) {
+                                outHtml = outHtml.split(remoteUrl).join(wxUrl);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn("[Metrix] 公众号外链图片转存跳过:", remoteUrl, e);
+            }
+        }
+        return outHtml;
+    }
+
+    static sliceCodePoints(str, maxLen) {
+        return Array.from(String(str || "").trim()).slice(0, maxLen).join("");
+    }
+
+    static async publishDraft({ appId, appSecret, title, author, digest, contentHtml, coverBuffer, onStep }) {
+        const runOnce = async (forceRefreshToken = false) => {
+            if (onStep) onStep("⏳ 鉴权中...");
+            const token = await this.getAccessToken(appId, appSecret, forceRefreshToken);
+
+            if (onStep) onStep("⏳ 上传封面...");
+            const thumbMediaId = await this.uploadPermanentCover(token, coverBuffer);
+
+            if (onStep) onStep("⏳ 同步配图...");
+            const cleanHtml = await this.sanitizeHtmlImagesForWeChat(contentHtml, token);
+
+            if (onStep) onStep("⏳ 写入草稿...");
+            const article = {
+                title: this.sliceCodePoints(title, 64) || "未命名文章",
+                author: this.sliceCodePoints(author || "", 8),
+                digest: this.sliceCodePoints(digest || "", 120),
+                content: cleanHtml,
+                thumb_media_id: thumbMediaId,
+                need_open_comment: 1,
+                only_fans_can_comment: 0
+            };
+            const payloadBuf = Buffer.from(JSON.stringify({ articles: [article] }), "utf8");
+            const draftResp = await this.requestRaw({
+                method: "POST",
+                apiPath: `/cgi-bin/draft/add?access_token=${encodeURIComponent(token)}`,
+                headers: { "Content-Type": "application/json; charset=utf-8" },
+                bodyBuffer: payloadBuf,
+                timeoutMs: 35000
+            });
+            if (!draftResp || !draftResp.media_id) {
+                const err = new Error(this.formatWeChatError(draftResp?.errcode ?? -1, draftResp?.errmsg || "写入草稿箱失败"));
+                err.errcode = draftResp?.errcode;
+                throw err;
+            }
+            return { mediaId: draftResp.media_id };
+        };
+
+        try {
+            return await runOnce(false);
+        } catch (err) {
+            if (err && (err.errcode === 40001 || err.errcode === 42001)) {
+                return await runOnce(true);
+            }
+            throw err;
+        }
+    }
+}
+
 const DEFAULT_CONFIG = {
     author: "技术专栏作者",
     capsule: FREE_DEFAULT_CAPSULE,
@@ -1006,6 +1292,14 @@ const DEFAULT_CONFIG = {
     port: 18999,
     licenseKey: "",
     licenseVerifiedEdition: "FREE",
+    wechatMp: {
+        appId: "",
+        appSecret: ""
+    },
+    dailyUsage: {
+        date: "",
+        count: 0
+    },
     imageBed: {
         type: "none",
         picgoUrl: "http://127.0.0.1:36677/upload",
@@ -1134,10 +1428,62 @@ class MetrixPlugin extends siyuan.Plugin {
                 if (stored.imageBed) {
                     this.config.imageBed = Object.assign({}, DEFAULT_CONFIG.imageBed, stored.imageBed);
                 }
+                if (stored.wechatMp) {
+                    this.config.wechatMp = Object.assign({}, DEFAULT_CONFIG.wechatMp, stored.wechatMp);
+                }
+                if (stored.dailyUsage) {
+                    this.config.dailyUsage = Object.assign({}, DEFAULT_CONFIG.dailyUsage, stored.dailyUsage);
+                }
             }
         } catch (e) {
             console.warn("[Metrix] 读取配置失败，采用默认值:", e);
         }
+    }
+
+    getLocalDateKey() {
+        const d = new Date();
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+    }
+
+    getDailyUsageCount() {
+        const today = this.getLocalDateKey();
+        let cfgCount = 0;
+        if (this.config?.dailyUsage?.date === today) {
+            cfgCount = Number(this.config.dailyUsage.count) || 0;
+        }
+        let lsCount = 0;
+        if (typeof localStorage !== "undefined") {
+            try {
+                const raw = localStorage.getItem("siyuan_metrix_daily_quota");
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed?.date === today) {
+                        lsCount = Number(parsed.count) || 0;
+                    }
+                }
+            } catch (e) {}
+        }
+        return Math.max(cfgCount, lsCount);
+    }
+
+    getRemainingFreeRuns() {
+        return Math.max(0, FREE_DAILY_LIMIT - this.getDailyUsageCount());
+    }
+
+    async consumeFreeRun() {
+        if (this.isPro()) return;
+        const today = this.getLocalDateKey();
+        const nextCount = this.getDailyUsageCount() + 1;
+        const dailyUsage = { date: today, count: nextCount };
+        if (typeof localStorage !== "undefined") {
+            try {
+                localStorage.setItem("siyuan_metrix_daily_quota", JSON.stringify(dailyUsage));
+            } catch (e) {}
+        }
+        await this.saveConfig({ dailyUsage });
     }
 
     async saveConfig(newConfig) {
@@ -1270,6 +1616,25 @@ class MetrixPlugin extends siyuan.Plugin {
         const content = `
             <div class="metrix-settings-modal">
                 <div class="metrix-settings-section">
+                    <div class="metrix-section-title">🟢 微信公众号官方草稿箱直连 (AppID & AppSecret)</div>
+                    <div style="font-size:12px; line-height:1.6; color:var(--b3-theme-on-surface-light);">
+                        前往「微信公众平台 → 设置与开发 → 基本配置」获取开发者凭证，并将本机外网 IP 添加至<strong>【IP白名单】</strong>，即可免浏览器一键将排版封面与图文直推公众号草稿箱。
+                    </div>
+                    <div class="metrix-form-row">
+                        <label class="metrix-field-label">开发者 ID (AppID)</label>
+                        <input id="metrix-set-wx-appid" class="metrix-input" value="${this.escapeHtml(cfg.wechatMp?.appId || '')}" placeholder="例如：wx1234567890abcdef" />
+                    </div>
+                    <div class="metrix-form-row">
+                        <label class="metrix-field-label">开发者密码 (AppSecret)</label>
+                        <div style="display:flex; gap:8px;">
+                            <input id="metrix-set-wx-secret" type="password" class="metrix-input" value="${this.escapeHtml(cfg.wechatMp?.appSecret || '')}" placeholder="输入 32 位公众号开发者密码 (仅加密存储于本机)" />
+                            <button id="metrix-set-btn-wx-test" class="metrix-btn-secondary" style="white-space:nowrap;">🔌 测试连接</button>
+                        </div>
+                        <div id="metrix-set-wx-msg" style="font-size:12px; min-height:16px; margin-top:2px;"></div>
+                    </div>
+                </div>
+
+                <div class="metrix-settings-section">
                     <div class="metrix-section-title">👤 品牌与作者署名 ${proLockHint}</div>
                     <div class="metrix-form-row">
                         <label class="metrix-field-label">默认作者署名</label>
@@ -1372,6 +1737,29 @@ class MetrixPlugin extends siyuan.Plugin {
                 companionBtn.onclick = () => this.openCompanionGuideDialog();
             }
 
+            const wxTestBtn = document.getElementById("metrix-set-btn-wx-test");
+            const wxMsgEl = document.getElementById("metrix-set-wx-msg");
+            if (wxTestBtn && wxMsgEl) {
+                wxTestBtn.onclick = async () => {
+                    const appId = document.getElementById("metrix-set-wx-appid")?.value?.trim() || "";
+                    const appSecret = document.getElementById("metrix-set-wx-secret")?.value?.trim() || "";
+                    if (!appId || !appSecret) {
+                        wxMsgEl.innerHTML = `<span style="color:#ef4444;">请先填写完整的公众号 AppID 与 AppSecret</span>`;
+                        return;
+                    }
+                    wxTestBtn.disabled = true;
+                    wxMsgEl.innerHTML = `<span style="color:#0284c7;">⏳ 正在直连微信公众平台校验凭证与 IP 白名单...</span>`;
+                    try {
+                        await WeChatOfficialApi.getAccessToken(appId, appSecret, true);
+                        wxMsgEl.innerHTML = `<span style="color:#22c55e; font-weight:600;">✔ 连接成功！AccessToken 获取正常，IP 白名单已放行</span>`;
+                    } catch (err) {
+                        wxMsgEl.innerHTML = `<span style="color:#ef4444;">❌ ${this.escapeHtml(err.message || String(err))}</span>`;
+                    } finally {
+                        wxTestBtn.disabled = false;
+                    }
+                };
+            }
+
             const gotoProBtn = document.getElementById("metrix-set-btn-goto-pro");
             if (gotoProBtn) {
                 gotoProBtn.onclick = () => this.openLicenseDialog();
@@ -1415,6 +1803,8 @@ class MetrixPlugin extends siyuan.Plugin {
                     const imgbbKey = document.getElementById("metrix-set-imgbb-key")?.value?.trim() || "";
                     const githubRepo = document.getElementById("metrix-set-gh-repo")?.value?.trim() || "";
                     const githubToken = document.getElementById("metrix-set-gh-token")?.value?.trim() || "";
+                    const wxAppId = document.getElementById("metrix-set-wx-appid")?.value?.trim() || "";
+                    const wxAppSecret = document.getElementById("metrix-set-wx-secret")?.value?.trim() || "";
 
                     await this.saveConfig({
                         author,
@@ -1423,6 +1813,10 @@ class MetrixPlugin extends siyuan.Plugin {
                         port,
                         licenseKey: licVal,
                         licenseVerifiedEdition: verifiedEd,
+                        wechatMp: {
+                            appId: wxAppId,
+                            appSecret: wxAppSecret
+                        },
                         imageBed: {
                             type: imgbedType,
                             picgoUrl,
@@ -1431,6 +1825,11 @@ class MetrixPlugin extends siyuan.Plugin {
                             githubToken
                         }
                     });
+
+                    const wxStatusBg = document.getElementById("status-wechat");
+                    if (wxStatusBg && wxAppId && wxAppSecret) {
+                        wxStatusBg.innerHTML = "⚪ 待发布";
+                    }
 
                     siyuan.showMessage("✔ Metrix 偏好设置已成功保存！", 2500, "info");
                 };
@@ -1444,7 +1843,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 <div style="text-align:center;">
                     <h2 style="margin:0 0 6px 0; font-size:20px; color:var(--b3-theme-on-surface);">💎 升级 Metrix 矩阵分发专业版</h2>
                     <div style="font-size:13px; color:var(--b3-theme-on-surface-light);">
-                        一次买断 · 终身授权 · 零 Python 依赖 · 全网平台极速并发分发
+                        一次买断 · 终身授权 · 公众号 API 直连 + 全网平台一键并发齐发
                     </div>
                 </div>
 
@@ -1453,12 +1852,12 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div class="metrix-plan-title">Metrix 免费社区版</div>
                         <div class="metrix-plan-price">¥0 <span style="font-size:12px; font-weight:normal; color:var(--b3-theme-on-surface-light);">永久免费</span></div>
                         <ul class="metrix-feature-list">
-                            <li>✔ 单次并发分发 2 个平台</li>
-                            <li>✔ 知乎、掘金、CSDN等核心生态</li>
+                            <li>✔ 单次发布 1 个平台（每日限 3 次）</li>
+                            <li>✔ 支持微信公众号草稿直连 & 6 大社区</li>
                             <li>✔ 微信公众号极客蓝内联高亮排版</li>
                             <li>✔ 原生 Canvas 2.35:1 封面渲染</li>
-                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 全平台 (6+) 一键并行齐发</li>
-                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 专栏胶囊标语与品牌深度定制</li>
+                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 全平台 (7+) 不限次数一键齐发</li>
+                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 专栏胶囊标语与云图床深度定制</li>
                         </ul>
                     </div>
 
@@ -1467,10 +1866,10 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div class="metrix-plan-title">💎 终身专业版 (Lifetime)</div>
                         <div class="metrix-plan-price gold">¥49 <span style="font-size:12px; font-weight:normal; color:var(--b3-theme-on-surface-light);">永久买断 / 团队版 ¥129</span></div>
                         <ul class="metrix-feature-list">
-                            <li>✔ <strong>全网平台一键无限制并行齐发 (6+平台)</strong></li>
+                            <li>✔ <strong>全网 7 大平台不限次数一键并发齐发</strong></li>
+                            <li>✔ <strong>微信公众号 AppID 直连 + 社区免密同步</strong></li>
                             <li>✔ <strong>专栏胶囊标语 & 品牌作者深度定制</strong></li>
                             <li>✔ <strong>PicGo / ImgBB / GitHub 图床极速直连</strong></li>
-                            <li>✔ <strong>优先更新支持 & 未来新平台免密同步</strong></li>
                             <li>✔ <strong>Ed25519 纯离线非对称验签，100% 隐私安全</strong></li>
                         </ul>
                     </div>
@@ -1515,6 +1914,13 @@ class MetrixPlugin extends siyuan.Plugin {
                         await this.saveConfig({ licenseKey: key, licenseVerifiedEdition: res.edition });
                         const edName = res.edition === "TEAM" ? "工作室团队版" : "终身专业版";
                         msgEl.innerHTML = `<span style="color:#22c55e; font-weight:600;">🎉 恭喜！[${edName} · SN:${res.serial}] 激活成功，感谢支持正版！</span>`;
+                        const badgeEl = document.getElementById("metrix-free-quota-badge");
+                        if (badgeEl) {
+                            badgeEl.className = "metrix-badge metrix-badge-pro";
+                            badgeEl.innerText = res.edition === "TEAM" ? "🏢 团队版" : "💎 专业版";
+                        }
+                        const actBtn = document.getElementById("metrix-header-activate");
+                        if (actBtn) actBtn.style.display = "none";
                         siyuan.showMessage(`🎉 恭喜！Metrix ${edName}已永久激活！`, 3500, "info");
                     } else {
                         msgEl.innerHTML = `<span style="color:#ef4444;">❌ 激活码数字签名校验未通过，请核对是否完整复制</span>`;
@@ -1542,11 +1948,24 @@ class MetrixPlugin extends siyuan.Plugin {
         const coverCanvas = await CoverRenderer.renderWechatCover(docData.title, defaultCapsule);
         const coverDataURL = CoverRenderer.canvasToDataURL(coverCanvas);
         let coverBuffer = await CoverRenderer.canvasToBuffer(coverCanvas);
+        let latestCoverPromise = Promise.resolve(coverBuffer);
         const inlineHtml = await ThemeEngine.renderToInlineHtml(docData.markdown, docData.dataDir);
 
+        const hasWechatCreds = Boolean(this.config.wechatMp?.appId?.trim() && this.config.wechatMp?.appSecret?.trim());
+        const checkWechatDefault = hasWechatCreds;
+        const checkZhihuDefault = isPro ? true : !hasWechatCreds;
+        const checkOtherDefault = isPro;
+
+        const remainingFree = this.getRemainingFreeRuns();
         const badgeHtml = edition === "TEAM"
             ? '<span class="metrix-badge metrix-badge-pro">🏢 团队版</span>'
-            : (isPro ? '<span class="metrix-badge metrix-badge-pro">💎 专业版</span>' : '<span class="metrix-badge metrix-badge-free">免费版 (限2平台)</span>');
+            : (isPro
+                ? '<span class="metrix-badge metrix-badge-pro">💎 专业版</span>'
+                : `<span id="metrix-free-quota-badge" class="metrix-badge metrix-badge-free">免费版 (单次1平台 · 今日余 ${remainingFree}/${FREE_DAILY_LIMIT}次)</span>`);
+
+        const wechatStatusInit = hasWechatCreds
+            ? '⚪ 待发布'
+            : '<span id="metrix-wx-quick-cfg" style="color:#0284c7; text-decoration:underline; cursor:pointer;" title="点击配置公众号 AppID 与 AppSecret">⚙️ 配置密钥</span>';
 
         const dialogContent = `
             <div class="metrix-dialog">
@@ -1589,48 +2008,56 @@ class MetrixPlugin extends siyuan.Plugin {
                     </div>
 
                     <div class="metrix-right">
-                        <div class="metrix-field-label">目标平台（复用浏览器已登录会话）</div>
+                        <div class="metrix-field-label">
+                            目标平台${!isPro ? ` <span style="font-weight:normal; color:#d97706;">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次)</span>` : '（公众号直连 + 浏览器会话复用）'}
+                        </div>
                         <div class="metrix-platforms-grid">
-                            <label class="metrix-platform-item active" data-platform="zhihu">
-                                <input type="checkbox" checked value="zhihu" style="accent-color: #0284c7;" />
+                            <label class="metrix-platform-item ${checkWechatDefault ? 'active' : ''}" data-platform="wechat" style="grid-column: 1 / -1;">
+                                <input type="checkbox" ${checkWechatDefault ? 'checked' : ''} value="wechat" style="accent-color: #16a34a;" />
+                                <span style="font-weight: 600;">🟢 微信公众号</span>
+                                <span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(22, 163, 74, 0.12); color: #16a34a; font-weight: 600;">AppID 草稿直连</span>
+                                <span class="metrix-platform-status" id="status-wechat">${wechatStatusInit}</span>
+                            </label>
+                            <label class="metrix-platform-item ${checkZhihuDefault ? 'active' : ''}" data-platform="zhihu">
+                                <input type="checkbox" ${checkZhihuDefault ? 'checked' : ''} value="zhihu" style="accent-color: #0284c7;" />
                                 <span>知乎专栏</span>
                                 <span class="metrix-platform-status" id="status-zhihu">⚪ 待发布</span>
                             </label>
-                            <label class="metrix-platform-item active" data-platform="juejin">
-                                <input type="checkbox" checked value="juejin" style="accent-color: #0284c7;" />
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="juejin">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="juejin" style="accent-color: #0284c7;" />
                                 <span>稀土掘金</span>
                                 <span class="metrix-platform-status" id="status-juejin">⚪ 待发布</span>
                             </label>
-                            <label class="metrix-platform-item ${isPro ? 'active' : ''}" data-platform="csdn">
-                                <input type="checkbox" ${isPro ? 'checked' : ''} value="csdn" style="accent-color: #0284c7;" />
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="csdn">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="csdn" style="accent-color: #0284c7;" />
                                 <span>CSDN 博客</span>
                                 <span class="metrix-platform-status" id="status-csdn">⚪ 待发布</span>
                             </label>
-                            <label class="metrix-platform-item ${isPro ? 'active' : ''}" data-platform="toutiao">
-                                <input type="checkbox" ${isPro ? 'checked' : ''} value="toutiao" style="accent-color: #0284c7;" />
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="toutiao">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="toutiao" style="accent-color: #0284c7;" />
                                 <span>今日头条</span>
                                 <span class="metrix-platform-status" id="status-toutiao">⚪ 待发布</span>
                             </label>
-                            <label class="metrix-platform-item ${isPro ? 'active' : ''}" data-platform="bilibili">
-                                <input type="checkbox" ${isPro ? 'checked' : ''} value="bilibili" style="accent-color: #0284c7;" />
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="bilibili">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="bilibili" style="accent-color: #0284c7;" />
                                 <span>B站专栏</span>
                                 <span class="metrix-platform-status" id="status-bilibili">⚪ 待发布</span>
                             </label>
-                            <label class="metrix-platform-item ${isPro ? 'active' : ''}" data-platform="feishu">
-                                <input type="checkbox" ${isPro ? 'checked' : ''} value="feishu" style="accent-color: #00d6b9;" />
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="feishu">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="feishu" style="accent-color: #00d6b9;" />
                                 <span>飞书云文档</span>
                                 <span class="metrix-platform-status" id="status-feishu">⚪ 待发布</span>
                             </label>
                         </div>
                         <div style="margin-top: auto; padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface);">
-                            💡 <strong>免密码发布</strong>：点击发布后自动调起浏览器伴侣，在后台完成多平台草稿写入（首次使用请先点右上角「🧩 伴侣扩展」安装）。
+                            💡 <strong>双引擎直推</strong>：<strong>微信公众号</strong>通过「⚙️ 设置」配置 AppID &amp; AppSecret 免浏览器直推官方草稿箱；其余社区调起「🧩 伴侣扩展」免密码同步。
                         </div>
                     </div>
                 </div>
 
                 <div class="metrix-footer">
                     <button class="metrix-btn-secondary" id="metrix-btn-copy-html">📋 仅复制微信排版</button>
-                    <button class="metrix-btn-primary" id="metrix-btn-dispatch"><span>🚀 一键全网分发至草稿箱</span></button>
+                    <button class="metrix-btn-primary" id="metrix-btn-dispatch"><span>🚀 一键分发至草稿箱</span></button>
                 </div>
             </div>
         `;
@@ -1639,18 +2066,22 @@ class MetrixPlugin extends siyuan.Plugin {
             title: "",
             content: dialogContent,
             width: "820px",
-            height: "580px"
+            height: "600px"
         });
 
-        const updateCoverLive = async () => {
-            const curTitle = document.getElementById("metrix-input-title")?.value?.trim() || docData.title;
-            const curCapsule = isPro
-                ? (document.getElementById("metrix-input-capsule")?.value?.trim() || defaultCapsule)
-                : FREE_DEFAULT_CAPSULE;
-            const canvas = await CoverRenderer.renderWechatCover(curTitle, curCapsule);
-            const img = document.getElementById("metrix-img-cover");
-            if (img) img.src = CoverRenderer.canvasToDataURL(canvas);
-            coverBuffer = await CoverRenderer.canvasToBuffer(canvas);
+        const updateCoverLive = () => {
+            latestCoverPromise = (async () => {
+                const curTitle = document.getElementById("metrix-input-title")?.value?.trim() || docData.title;
+                const curCapsule = this.isPro()
+                    ? (document.getElementById("metrix-input-capsule")?.value?.trim() || defaultCapsule)
+                    : FREE_DEFAULT_CAPSULE;
+                const canvas = await CoverRenderer.renderWechatCover(curTitle, curCapsule);
+                const img = document.getElementById("metrix-img-cover");
+                if (img) img.src = CoverRenderer.canvasToDataURL(canvas);
+                coverBuffer = await CoverRenderer.canvasToBuffer(canvas);
+                return coverBuffer;
+            })();
+            return latestCoverPromise;
         };
 
         setTimeout(() => {
@@ -1676,10 +2107,34 @@ class MetrixPlugin extends siyuan.Plugin {
                 dInput.value = docData.digest || "";
             }
 
+            const wxQuickCfg = document.getElementById("metrix-wx-quick-cfg");
+            if (wxQuickCfg) {
+                wxQuickCfg.onclick = (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    this.openSettingsDialog();
+                };
+            }
+
             document.querySelectorAll(".metrix-platforms-grid .metrix-platform-item").forEach(labelEl => {
                 const cb = labelEl.querySelector("input[type='checkbox']");
                 if (cb) {
                     cb.onchange = () => {
+                        if (!this.isPro() && cb.checked) {
+                            let switchedFromOther = false;
+                            document.querySelectorAll(".metrix-platforms-grid .metrix-platform-item").forEach(otherLabel => {
+                                if (otherLabel === labelEl) return;
+                                const otherCb = otherLabel.querySelector("input[type='checkbox']");
+                                if (otherCb && otherCb.checked) {
+                                    otherCb.checked = false;
+                                    otherLabel.classList.remove("active");
+                                    switchedFromOther = true;
+                                }
+                            });
+                            if (switchedFromOther) {
+                                siyuan.showMessage("💡 免费版每次限发布 1 个平台（升级 Pro 解锁 7 大平台一键齐发）", 2300, "info");
+                            }
+                        }
                         labelEl.classList.toggle("active", cb.checked);
                     };
                 }
@@ -1716,8 +2171,9 @@ class MetrixPlugin extends siyuan.Plugin {
 
         const dispatchBtn = document.getElementById("metrix-btn-dispatch");
         if (dispatchBtn) {
-            dispatchBtn.onclick = () => {
-                this.executeDispatch(docData, inlineHtml, coverBuffer);
+            dispatchBtn.onclick = async () => {
+                const freshCoverBuf = await latestCoverPromise;
+                await this.executeDispatch(docData, inlineHtml, freshCoverBuf);
             };
         }
     }
@@ -1743,87 +2199,172 @@ class MetrixPlugin extends siyuan.Plugin {
             return;
         }
 
+        const isPro = this.isPro();
+
+        // 1. 免费版每日使用次数拦截（每日限 3 次）
+        if (!isPro && this.getRemainingFreeRuns() <= 0) {
+            const upgradeNow = confirm(`💡【Metrix 今日免费额度已用完】\n\n免费社区版每日支持发布 ${FREE_DAILY_LIMIT} 次（明日 00:00 自动恢复）。\n\n点击【确定】立即升级终身专业版（¥49 一次买断，永久解锁不限次数 + 全网 7 大平台一键齐发）！`);
+            if (upgradeNow) {
+                this.openLicenseDialog();
+            }
+            return;
+        }
+
+        // 2. 免费版单次发布平台数拦截（每次限 1 个平台）
         let targetPlatforms = checkedPlatforms;
-        if (!this.isPro() && targetPlatforms.length > 2) {
-            const shouldUpgrade = confirm(`💡【Metrix 免费版限制提示】\n\n免费版单次最多支持同时勾选 2 个平台（当前已选 ${targetPlatforms.length} 个）。\n\n点击【确定】立即升级/激活终身专业版（¥49 一次买断，解锁 6+ 平台并发齐发、自定义品牌胶囊与云图床），点击【取消】仅分发前 2 个平台。`);
+        if (!isPro && targetPlatforms.length > FREE_MAX_PLATFORMS) {
+            const shouldUpgrade = confirm(`💡【Metrix 免费版限制提示】\n\n免费版每次仅支持发布 ${FREE_MAX_PLATFORMS} 个平台（当前已选 ${targetPlatforms.length} 个，每日限 ${FREE_DAILY_LIMIT} 次）。\n\n点击【确定】立即升级/激活终身专业版（¥49 一次买断，解锁全网 7 大平台并发齐发），点击【取消】仅发布首个选中平台。`);
             if (shouldUpgrade) {
                 this.openLicenseDialog();
                 return;
             } else {
-                targetPlatforms = targetPlatforms.slice(0, 2);
+                targetPlatforms = targetPlatforms.slice(0, FREE_MAX_PLATFORMS);
             }
         }
 
-        // Pro 专属：处理 PicGo / ImgBB / GitHub 云图床上传替换
-        let finalMarkdown = docData.markdown;
-        const bedType = this.isPro() ? (this.config.imageBed?.type || "none") : "none";
-        if (bedType !== "none" && docData.referencedAssets?.length > 0) {
-            try {
-                finalMarkdown = await this.uploadAssetsViaImageBed(docData.markdown, docData.referencedAssets, docData.dataDir, bedType);
-            } catch (e) {
-                console.warn("[Metrix] 图床处理失败，自动保留原稿:", e);
+        // 3. 校验微信公众号 AppID & AppSecret 配置（未配置时不扣减免费额度）
+        const wantsWechat = targetPlatforms.includes("wechat");
+        const wxAppId = (this.config.wechatMp?.appId || "").trim();
+        const wxAppSecret = (this.config.wechatMp?.appSecret || "").trim();
+        const canDispatchWechat = wantsWechat && Boolean(wxAppId && wxAppSecret);
+
+        if (wantsWechat && (!wxAppId || !wxAppSecret)) {
+            const wxStatusEl = document.getElementById("status-wechat");
+            if (wxStatusEl) {
+                wxStatusEl.innerHTML = `<span style="color:#d97706;">⚙️ 未配密钥</span>`;
+            }
+            siyuan.showMessage("⚙️ 请先在「偏好设置」中填写微信公众号 AppID 与 AppSecret", 3500, "error");
+            this.openSettingsDialog();
+            if (targetPlatforms.length === 1) {
+                return;
             }
         }
 
-        const taskId = `task_${Date.now()}`;
-        const taskToken = Math.random().toString(36).substring(2, 12);
+        const companionPlatforms = targetPlatforms.filter(p => p !== "wechat");
+        let shouldConsumeFreeQuota = false;
 
-        const assetsMap = new Map();
-        assetsMap.set("cover", { filePath: null, buffer: coverBuffer, mimeType: "image/png" });
-        const assetsList = [];
-
-        if (docData.referencedAssets.length > 0) {
-            for (let i = 0; i < docData.referencedAssets.length; i++) {
-                const item = docData.referencedAssets[i];
-                const assetId = `asset_${i+1}`;
-                let base64 = await ThemeEngine.resolveAssetBase64(item.relPath, docData.dataDir);
-                if (base64 && base64.includes(",")) {
-                    base64 = base64.split(",")[1];
+        // 4. 分支 A：调起浏览器伴侣分发其余社区平台
+        if (companionPlatforms.length > 0) {
+            let finalMarkdown = docData.markdown;
+            const bedType = isPro ? (this.config.imageBed?.type || "none") : "none";
+            if (bedType !== "none" && docData.referencedAssets?.length > 0) {
+                try {
+                    finalMarkdown = await this.uploadAssetsViaImageBed(docData.markdown, docData.referencedAssets, docData.dataDir, bedType);
+                } catch (e) {
+                    console.warn("[Metrix] 图床处理失败，自动保留原稿:", e);
                 }
-                if (fs && docData.dataDir) {
-                    const diskPath = path.join(docData.dataDir, item.relPath);
-                    if (fs.existsSync(diskPath)) {
-                        assetsMap.set(assetId, { filePath: diskPath, buffer: null, mimeType: "image/png" });
+            }
+
+            const taskId = `task_${Date.now()}`;
+            const taskToken = Math.random().toString(36).substring(2, 12);
+
+            const assetsMap = new Map();
+            assetsMap.set("cover", { filePath: null, buffer: coverBuffer, mimeType: "image/png" });
+            const assetsList = [];
+
+            if (docData.referencedAssets.length > 0) {
+                for (let i = 0; i < docData.referencedAssets.length; i++) {
+                    const item = docData.referencedAssets[i];
+                    const assetId = `asset_${i + 1}`;
+                    let base64 = await ThemeEngine.resolveAssetBase64(item.relPath, docData.dataDir);
+                    if (base64 && base64.includes(",")) {
+                        base64 = base64.split(",")[1];
                     }
+                    if (fs && docData.dataDir) {
+                        const diskPath = path.join(docData.dataDir, item.relPath);
+                        if (fs.existsSync(diskPath)) {
+                            assetsMap.set(assetId, { filePath: diskPath, buffer: null, mimeType: "image/png" });
+                        }
+                    }
+                    assetsList.push({
+                        id: assetId,
+                        relPath: item.relPath,
+                        filename: item.filename || `${assetId}.png`,
+                        alt: item.alt || "",
+                        base64: base64 || null,
+                        mimeType: "image/png"
+                    });
                 }
-                assetsList.push({
-                    id: assetId,
-                    relPath: item.relPath,
-                    filename: item.filename || `${assetId}.png`,
-                    alt: item.alt || "",
-                    base64: base64 || null,
-                    mimeType: "image/png"
-                });
+            }
+
+            const tagList = (this.config.tags || "技术, 生产力, 架构").split(/[,，\s]+/).filter(Boolean);
+
+            const taskData = {
+                id: taskId,
+                article: {
+                    title: finalTitle,
+                    markdown: finalMarkdown,
+                    html: inlineHtml,
+                    digest: finalDigest,
+                    tags: tagList,
+                    coverAssetId: "cover",
+                    assets: assetsList
+                },
+                platforms: companionPlatforms,
+                createdAt: Date.now()
+            };
+
+            this.bridgeServer.registerTask(taskId, taskData, taskToken, assetsMap);
+
+            companionPlatforms.forEach(p => {
+                const el = document.getElementById(`status-${p}`);
+                if (el) el.innerHTML = "⏳ 分发中...";
+            });
+
+            const handshakeUrl = `http://127.0.0.1:${this.bridgeServer.port}/matrix-bridge?taskId=${taskId}#token=${taskToken}`;
+            window.open(handshakeUrl);
+            shouldConsumeFreeQuota = true;
+            if (!canDispatchWechat) {
+                siyuan.showMessage("🚀 已唤起浏览器伴侣，草稿正在自动写入...", 4000, "info");
             }
         }
 
-        const tagList = (this.config.tags || "技术, 生产力, 架构").split(/[,，\s]+/).filter(Boolean);
+        // 5. 分支 B：微信公众号 AppID & AppSecret 官方草稿箱直推
+        if (canDispatchWechat) {
+            const wxStatusEl = document.getElementById("status-wechat");
+            const dispatchBtn = document.getElementById("metrix-btn-dispatch");
+            if (dispatchBtn) dispatchBtn.disabled = true;
+            try {
+                await WeChatOfficialApi.publishDraft({
+                    appId: wxAppId,
+                    appSecret: wxAppSecret,
+                    title: finalTitle,
+                    author: isPro ? (this.config.author || "") : "",
+                    digest: finalDigest,
+                    contentHtml: inlineHtml,
+                    coverBuffer,
+                    onStep: (stepText) => {
+                        if (wxStatusEl) wxStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
+                    }
+                });
+                if (wxStatusEl) {
+                    wxStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿箱</a>`;
+                }
+                shouldConsumeFreeQuota = true;
+                if (companionPlatforms.length > 0) {
+                    siyuan.showMessage("🎉 微信公众号已直推草稿箱，其余社区正在后台同步！", 4500, "info");
+                } else {
+                    siyuan.showMessage("🎉 微信公众号草稿推送成功！可前往公众平台后台预览群发", 4500, "info");
+                }
+            } catch (err) {
+                const errMsg = err?.message || String(err);
+                if (wxStatusEl) {
+                    wxStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
+                }
+                siyuan.showMessage("❌ 公众号推送失败：" + errMsg, 5500, "error");
+            } finally {
+                if (dispatchBtn) dispatchBtn.disabled = false;
+            }
+        }
 
-        const taskData = {
-            id: taskId,
-            article: {
-                title: finalTitle,
-                markdown: finalMarkdown,
-                html: inlineHtml,
-                digest: finalDigest,
-                tags: tagList,
-                coverAssetId: "cover",
-                assets: assetsList
-            },
-            platforms: targetPlatforms,
-            createdAt: Date.now()
-        };
-
-        this.bridgeServer.registerTask(taskId, taskData, taskToken, assetsMap);
-
-        targetPlatforms.forEach(p => {
-            const el = document.getElementById(`status-${p}`);
-            if (el) el.innerHTML = "⏳ 分发中...";
-        });
-
-        const handshakeUrl = `http://127.0.0.1:${this.bridgeServer.port}/matrix-bridge?taskId=${taskId}#token=${taskToken}`;
-        window.open(handshakeUrl);
-        siyuan.showMessage("🚀 已唤起浏览器伴侣，草稿正在自动写入...", 4000, "info");
+        // 6. 扣减免费版今日额度并实时刷新顶部徽标（配置报错不误扣额度）
+        if (!isPro && shouldConsumeFreeQuota) {
+            await this.consumeFreeRun();
+            const badgeEl = document.getElementById("metrix-free-quota-badge");
+            if (badgeEl) {
+                badgeEl.innerText = `免费版 (单次1平台 · 今日余 ${this.getRemainingFreeRuns()}/${FREE_DAILY_LIMIT}次)`;
+            }
+        }
     }
 
     async uploadAssetsViaImageBed(markdown, referencedAssets, dataDir, bedType) {

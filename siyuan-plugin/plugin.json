@@ -2,7 +2,7 @@
   "name": "siyuan-metrix",
   "author": "lsqingfeng",
   "url": "https://github.com/lsqingfeng/siyuan-metrix",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "minAppVersion": "3.0.0",
   "backends": [
     "windows",
@@ -22,9 +22,9 @@
     "zh-CN": "Metrix 自媒体矩阵一键分发"
   },
   "description": {
-    "default": "Zero-Python multi-platform publisher for SiYuan Note. Reuses authenticated browser sessions to dispatch articles to Zhihu, Juejin, CSDN, Toutiao, Bilibili, and WeChat.",
-    "zh_CN": "思源笔记多平台矩阵一键分发套件。零 Python 依赖，安全复用浏览器登录态，一键并发打入知乎、稀土掘金、CSDN、今日头条、B站专栏草稿箱并支持微信极客排版。",
-    "zh-CN": "思源笔记多平台矩阵一键分发套件。零 Python 依赖，安全复用浏览器登录态，一键并发打入知乎、稀土掘金、CSDN、今日头条、B站专栏草稿箱并支持微信极客排版。"
+    "default": "Zero-Python multi-platform publisher for SiYuan Note. Direct WeChat Official Account draft API push (AppID/AppSecret) + browser session dispatch to Zhihu, Juejin, CSDN, Toutiao, Bilibili & Feishu.",
+    "zh_CN": "思源笔记多平台矩阵一键分发套件。支持微信公众号官方草稿箱 API 直连推送 (AppID/AppSecret)，并安全复用浏览器登录态一键打入知乎、稀土掘金、CSDN、今日头条、B站专栏与飞书文档。",
+    "zh-CN": "思源笔记多平台矩阵一键分发套件。支持微信公众号官方草稿箱 API 直连推送 (AppID/AppSecret)，并安全复用浏览器登录态一键打入知乎、稀土掘金、CSDN、今日头条、B站专栏与飞书文档。"
   },
   "readme": {
     "default": "README.md",
@@ -33,12 +33,12 @@
   },
   "funding": {
     "custom": [
-      "https://afdian.com/a/lsqingfeng"
+      "https://afdian.com/item/e617d03cddba11f1bb3552540025c377"
     ],
     "links": [
       {
         "label": "爱发电 · 升级 Metrix 终身专业版",
-        "url": "https://afdian.com/a/lsqingfeng"
+        "url": "https://afdian.com/item/e617d03cddba11f1bb3552540025c377"
       }
     ]
   },

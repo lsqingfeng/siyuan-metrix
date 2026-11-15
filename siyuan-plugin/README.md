@@ -28,7 +28,8 @@ Traditional Python/Playwright automation scripts present severe obstacles:
 - **CSDN Blog (CSDN 博客)**: Intelligent multiline paste injection preserving headings and paragraphs.
 - **Toutiao / Micro-Toutiao (今日头条)**: ByteDance creator platform rich text formatting.
 - **Bilibili Articles (B站专栏)**: Preserved inline styling and typography.
-- **WeChat Official Account (微信公众号)**: 1-click clipboard copy formatted with clean inline geek styles.
+- **WeChat Official Account (微信公众号)**: Direct Official Draft Box API push (`AppID` + `AppSecret` uploading 2.35:1 Canvas cover + inline images) & 1-click clipboard copy.
+- **Feishu Docs (飞书云文档)**: Structured rich-text draft synchronization.
 
 ---
 
@@ -38,10 +39,9 @@ Traditional Python/Playwright automation scripts present severe obstacles:
 1. Install **Metrix** from the SiYuan Marketplace (or place `siyuan-metrix` into `data/plugins/`).
 2. Enable **Metrix** in SiYuan Settings -> Plugins.
 
-### 2. Install Built-in Browser Companion
-1. Press **`⌥M`** in SiYuan Note (or click the top-bar Rocket icon) to open Metrix, then click **🧩 Companion Extension** in the top right.
-2. Click **Export Browser Companion (.zip)** to save `metrix-companion.zip` to your `Downloads` folder and unzip it.
-3. Open `chrome://extensions/` in Chrome or Edge, enable **Developer mode**, click **Load unpacked**, and select the unzipped folder.
+### 2. Configure WeChat Direct API or Browser Companion
+1. **WeChat Official Account Direct Push (Optional)**: Press **`⌥M`** -> click **⚙️ Settings** -> enter your WeChat `AppID` and `AppSecret` (whitelist your public IP in WeChat MP Settings) -> click **Test Connection**.
+2. **Browser Companion (Zhihu/Juejin/CSDN/Toutiao/Bilibili/Feishu)**: Click **🧩 Companion Extension** -> **Export Browser Companion (.zip)** -> unzip and load via **Load unpacked** at `chrome://extensions/` (Developer mode on).
 
 ---
 
@@ -49,15 +49,15 @@ Traditional Python/Playwright automation scripts present severe obstacles:
 
 | Feature | Metrix Free | 💎 Metrix Lifetime Pro |
 | :--- | :---: | :---: |
-| Zhihu, Juejin, CSDN, Toutiao, Bilibili | ✔ | ✔ |
-| WeChat Geek Inline Formatter | ✔ | ✔ |
+| WeChat Official Account Draft API Push | ✔ | ✔ |
+| Zhihu, Juejin, CSDN, Toutiao, Bilibili, Feishu | ✔ | ✔ |
 | Real-time Canvas 2.35:1 Cover Generator | ✔ | ✔ |
-| **Simultaneous Platform Dispatch** | **Up to 2 Platforms** | **Unlimited (All 6+ Platforms Parallel)** |
+| **Dispatch Quota & Parallelism** | **1 Platform / Run · 3 Runs / Day** | **Unlimited Runs & All 7 Platforms Parallel** |
 | **Author & Cover Capsule Branding** | Preset | **Fully Customizable** |
 | **PicGo / ImgBB / GitHub CDN Image Beds** | Pure Flow | **Automated Upload & Link Replacement** |
 | **Offline Ed25519 Perpetual License** | Community | **1-Time Purchase, Lifetime Updates** |
 
-- 🛒 **Upgrade to Lifetime Pro (¥49 / $7.99)**: [https://afdian.com/a/lsqingfeng](https://afdian.com/a/lsqingfeng)
+- 🛒 **Upgrade to Lifetime Pro (¥49 / $7.99)**: [https://afdian.com/item/e617d03cddba11f1bb3552540025c377](https://afdian.com/item/e617d03cddba11f1bb3552540025c377)
 
 ---
 

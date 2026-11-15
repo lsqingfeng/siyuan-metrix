@@ -41,8 +41,9 @@ with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslev
 print(f"✔ Packaged {out_zip} ({os.path.getsize(out_zip) / 1024:.1f} KB)")
 PY
 
-cp "$RELEASE_DIR/package.zip" "$RELEASE_DIR/siyuan-metrix-v2.0.0.zip"
-cp "$ROOT_DIR/browser-companion/dist/metrix-companion.zip" "$RELEASE_DIR/metrix-companion-v2.0.0.zip"
+VERSION="$(node -p "require('$PLUGIN_DIR/plugin.json').version")"
+cp "$RELEASE_DIR/package.zip" "$RELEASE_DIR/siyuan-metrix-v${VERSION}.zip"
+cp "$ROOT_DIR/browser-companion/dist/metrix-companion.zip" "$RELEASE_DIR/metrix-companion-v${VERSION}.zip"
 
 echo "=== [4/4] Release artifacts ready in $RELEASE_DIR ==="
 ls -lh "$RELEASE_DIR"
