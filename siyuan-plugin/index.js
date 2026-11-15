@@ -655,12 +655,15 @@ class DocParser {
             digest = `本文深度解析：${detectedTitle}`;
         }
 
-        const assetRegex = /!\[([^\]]*)\]\((assets\/[^)\s]+)\)/g;
+        const assetRegex = /!\[([^\]]*)\]\((\.?\/?assets\/[^)\s"]+)(?:\s+"[^"]*")?\)/g;
         const referencedAssets = [];
+        const seenRelPaths = new Set();
         let match;
         while ((match = assetRegex.exec(cleanMd)) !== null) {
             const alt = match[1];
             const relPath = match[2];
+            if (seenRelPaths.has(relPath)) continue;
+            seenRelPaths.add(relPath);
             const assetFilename = relPath.split("/").pop();
             referencedAssets.push({ alt, relPath, filename: assetFilename });
         }
@@ -2246,10 +2249,14 @@ class MetrixPlugin extends siyuan.Plugin {
         // 4. 分支 A：调起浏览器伴侣分发其余社区平台
         if (companionPlatforms.length > 0) {
             let finalMarkdown = docData.markdown;
+            let companionHtml = inlineHtml;
             const bedType = isPro ? (this.config.imageBed?.type || "none") : "none";
             if (bedType !== "none" && docData.referencedAssets?.length > 0) {
                 try {
                     finalMarkdown = await this.uploadAssetsViaImageBed(docData.markdown, docData.referencedAssets, docData.dataDir, bedType);
+                    if (finalMarkdown !== docData.markdown) {
+                        companionHtml = await ThemeEngine.renderToInlineHtml(finalMarkdown, docData.dataDir);
+                    }
                 } catch (e) {
                     console.warn("[Metrix] 图床处理失败，自动保留原稿:", e);
                 }
@@ -2294,7 +2301,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 article: {
                     title: finalTitle,
                     markdown: finalMarkdown,
-                    html: inlineHtml,
+                    html: companionHtml,
                     digest: finalDigest,
                     tags: tagList,
                     coverAssetId: "cover",
@@ -2521,12 +2528,16 @@ class MetrixPlugin extends siyuan.Plugin {
                     },
                     body: JSON.stringify({
                         message: `chore(metrix): upload ${safeName}`,
-                        content: rawBase64
+                        content: rawBase64,
+                        committer: {
+                            name: repo.split("/")[0] || "metrix-bot",
+                            email: "noreply@users.noreply.github.com"
+                        }
                     })
                 });
 
                 if (resp.ok) {
-                    const cdnUrl = `https://fastly.jsdelivr.net/gh/${repo}/${remotePath}`;
+                    const cdnUrl = `https://gcore.jsdelivr.net/gh/${repo}@main/${remotePath}`;
                     updatedMd = updatedMd.split(item.relPath).join(cdnUrl);
                     successCount++;
                 }
