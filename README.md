@@ -5,6 +5,10 @@
 > **Author**: 一缕82年的清风 (`lsqingfeng`)  
 > **💎 Official Aifadian Pro License Store**: **[https://afdian.com/item/e617d03cddba11f1bb3552540025c377](https://afdian.com/item/e617d03cddba11f1bb3552540025c377)**
 
+![Metrix 1-Click Parallel Dispatch Demo](./siyuan-plugin/demo.gif)
+
+![Metrix Feature Overview](./siyuan-plugin/preview.png)
+
 Metrix is a modern, zero-Python multi-platform publishing suite designed for technical bloggers, indie developers, and architects. It supports direct **WeChat Official Account Draft Box API push (`AppID` + `AppSecret`)** alongside authenticated browser-session dispatch into **Zhihu, Xitu Juejin, CSDN, Toutiao, Bilibili, and Feishu Docs** with one click.
 
 ---

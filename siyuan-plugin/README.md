@@ -1,5 +1,16 @@
 # 🚀 Metrix: Multi-Platform Matrix Publisher for SiYuan Note
 
+**English** | [简体中文](./README.zh-CN.md)
+
+> **💎 Lifetime Pro ¥49 / $7.99 (1-Time Purchase · Offline Ed25519 License · 7-Platform Parallel Dispatch · Instant Auto-Delivery)**  
+> 🛒 **Get Lifetime Pro License on Aifadian**: **[https://afdian.com/item/e617d03cddba11f1bb3552540025c377](https://afdian.com/item/e617d03cddba11f1bb3552540025c377)**
+
+![Metrix 1-Click Parallel Dispatch Demo](./demo.gif)
+
+*▲ Live Workflow: Press `⌥M` inside SiYuan Note -> select WeChat Official Account & 6 major tech/creator platforms -> dispatch formatted drafts & 2.35:1 Canvas banners simultaneously.*
+
+![Metrix Feature Overview](./preview.png)
+
 > **Eliminate fragile Python/Selenium scrapers and tedious manual copy-pasting.**  
 > Metrix is a commercial-grade publishing suite designed for technical writers, indie developers, and architects. With zero Python dependencies and native browser session reuse, dispatch articles directly from SiYuan Note into Zhihu, Juejin, CSDN, Toutiao, and Bilibili draftboxes in one click.
 

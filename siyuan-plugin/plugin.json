@@ -18,18 +18,15 @@
   "preview": "preview.png",
   "displayName": {
     "default": "Metrix: Multi-Platform Matrix Publisher",
-    "zh_CN": "Metrix 自媒体矩阵一键分发",
-    "zh-CN": "Metrix 自媒体矩阵一键分发"
+    "zh_CN": "Metrix 自媒体矩阵一键分发"
   },
   "description": {
     "default": "Zero-Python multi-platform publisher for SiYuan Note. Direct WeChat Official Account draft API push (AppID/AppSecret) + browser session dispatch to Zhihu, Juejin, CSDN, Toutiao, Bilibili & Feishu.",
-    "zh_CN": "思源笔记多平台矩阵一键分发套件。支持微信公众号官方草稿箱 API 直连推送 (AppID/AppSecret)，并安全复用浏览器登录态一键打入知乎、稀土掘金、CSDN、今日头条、B站专栏与飞书文档。",
-    "zh-CN": "思源笔记多平台矩阵一键分发套件。支持微信公众号官方草稿箱 API 直连推送 (AppID/AppSecret)，并安全复用浏览器登录态一键打入知乎、稀土掘金、CSDN、今日头条、B站专栏与飞书文档。"
+    "zh_CN": "思源笔记多平台矩阵一键分发套件。支持微信公众号官方草稿箱 API 直连推送 (AppID/AppSecret)，并安全复用浏览器登录态一键打入知乎、稀土掘金、CSDN、今日头条、B站专栏与飞书文档。"
   },
   "readme": {
     "default": "README.md",
-    "zh_CN": "README.zh-CN.md",
-    "zh-CN": "README.zh-CN.md"
+    "zh_CN": "README.zh-CN.md"
   },
   "funding": {
     "custom": [

@@ -2216,7 +2216,7 @@ class MetrixPlugin extends siyuan.Plugin {
 
                     <div class="metrix-right">
                         <div class="metrix-field-label">
-                            目标平台${!isPro ? ` <span style="font-weight:normal; color:#d97706;">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次)</span>` : '（公众号直连 + 浏览器会话复用）'}
+                            目标平台${!isPro ? ` <span id="metrix-label-upsell" style="font-weight:600; color:#d97706; cursor:pointer;" title="点击查看 Pro 终身版并发权益">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次 · <span style="text-decoration:underline;">解锁 7 平台齐发</span>)</span>` : '（公众号直连 + 浏览器会话复用）'}
                         </div>
                         <div class="metrix-platforms-grid">
                             <label class="metrix-platform-item ${checkWechatDefault ? 'active' : ''}" data-platform="wechat" style="grid-column: 1 / -1;">
@@ -2256,9 +2256,15 @@ class MetrixPlugin extends siyuan.Plugin {
                                 <span class="metrix-platform-status" id="status-feishu">⚪ 待发布</span>
                             </label>
                         </div>
-                        <div style="margin-top: auto; padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface);">
-                            💡 <strong>双引擎直推</strong>：<strong>微信公众号</strong>通过「⚙️ 设置」配置 AppID &amp; AppSecret 免浏览器直推官方草稿箱；其余社区调起「🧩 伴侣扩展」免密码同步。
-                        </div>
+                        ${!isPro
+                            ? `<div id="metrix-multi-pro-upsell" style="margin-top: auto; padding: 11px 12px; background: rgba(245, 158, 11, 0.08); border-radius: 8px; border: 1px solid rgba(245, 158, 11, 0.32); font-size: 12px; line-height: 1.55; color: var(--b3-theme-on-surface); display:flex; align-items:center; justify-content:space-between; gap:10px; transition: all 0.2s;">
+                                <div id="metrix-multi-pro-upsell-text">💡 <strong>单平台免费体验中</strong>：支持全平台逐个分发；升级 <strong>Pro 终身版 (¥49)</strong> 解锁 <strong>7 大平台一键并发齐发</strong>与云图床。</div>
+                                <button id="metrix-inline-upsell-btn" class="metrix-top-btn metrix-top-btn-pro" style="white-space:nowrap; flex-shrink:0; padding:6px 11px;">💎 查看 Pro</button>
+                               </div>`
+                            : `<div style="margin-top: auto; padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface);">
+                                💡 <strong>双引擎直推</strong>：<strong>微信公众号</strong>通过「⚙️ 设置」配置 AppID &amp; AppSecret 免浏览器直推官方草稿箱；其余社区调起「🧩 伴侣扩展」免密码同步。
+                               </div>`
+                        }
                     </div>
                 </div>
 
@@ -2323,6 +2329,15 @@ class MetrixPlugin extends siyuan.Plugin {
                 };
             }
 
+            const labelUpsell = document.getElementById("metrix-label-upsell");
+            if (labelUpsell) {
+                labelUpsell.onclick = () => this.openLicenseDialog();
+            }
+            const inlineUpsellBtn = document.getElementById("metrix-inline-upsell-btn");
+            if (inlineUpsellBtn) {
+                inlineUpsellBtn.onclick = () => this.openLicenseDialog();
+            }
+
             document.querySelectorAll(".metrix-platforms-grid .metrix-platform-item").forEach(labelEl => {
                 const cb = labelEl.querySelector("input[type='checkbox']");
                 if (cb) {
@@ -2339,7 +2354,17 @@ class MetrixPlugin extends siyuan.Plugin {
                                 }
                             });
                             if (switchedFromOther) {
-                                siyuan.showMessage("💡 免费版每次限发布 1 个平台（升级 Pro 解锁 7 大平台一键齐发）", 2300, "info");
+                                const platformName = labelEl.querySelector("span:not(.metrix-platform-status)")?.textContent?.trim() || cb.value;
+                                siyuan.showMessage(`💡 已切换为「${platformName}」｜多平台一键并发齐发为 Pro 终身版专属权益`, 2600, "info");
+                                const upsellBox = document.getElementById("metrix-multi-pro-upsell");
+                                const upsellText = document.getElementById("metrix-multi-pro-upsell-text");
+                                const upsellBtn = document.getElementById("metrix-inline-upsell-btn");
+                                if (upsellBox && upsellText) {
+                                    upsellBox.style.background = "rgba(245, 158, 11, 0.16)";
+                                    upsellBox.style.borderColor = "#f59e0b";
+                                    upsellText.innerHTML = `⚡ <strong>已切换为「${this.escapeHtml(platformName)}」</strong>：同时勾选多平台并发齐发需解锁 <strong>Pro 终身版 (¥49)</strong>，1 秒同时写入 7 平台草稿箱。`;
+                                    if (upsellBtn) upsellBtn.textContent = "💎 立即解锁齐发";
+                                }
                             }
                         }
                         labelEl.classList.toggle("active", cb.checked);

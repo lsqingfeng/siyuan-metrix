@@ -5,6 +5,10 @@
 > **作者**：一缕82年的清风 (`lsqingfeng`)  
 > **💎 爱发电 Pro 激活码自动发卡商品直达**：**[https://afdian.com/item/e617d03cddba11f1bb3552540025c377](https://afdian.com/item/e617d03cddba11f1bb3552540025c377)**
 
+![Metrix 一键并发分发全流程演示](./siyuan-plugin/demo.gif)
+
+![Metrix 高清功能总览](./siyuan-plugin/preview.png)
+
 Metrix 是专为程序员、架构师与技术博主打造的**零 Python 依赖自媒体多平台一键分发系统**。既支持通过 `AppID + AppSecret` 将文章与 2.35:1 极客蓝封面**免浏览器直推微信公众号官方草稿箱**，也支持安全复用日常 Chrome / Edge 浏览器已登录会话，在思源笔记内按 `⌥M` 一键并发打入**知乎专栏、稀土掘金、CSDN、今日头条、B站专栏、飞书云文档**草稿箱。
 
 ---
