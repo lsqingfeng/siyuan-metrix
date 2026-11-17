@@ -1529,7 +1529,7 @@ class MetrixPlugin extends siyuan.Plugin {
     }
 
     async onload() {
-        console.log("[Metrix] Starting Metrix Commercial Plugin v2.0...");
+        console.log("[Metrix] Starting Metrix Commercial Plugin v2.1.3...");
         await this.loadConfig();
 
         // 启动时复核授权签名状态
