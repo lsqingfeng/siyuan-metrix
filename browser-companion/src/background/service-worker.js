@@ -3,6 +3,7 @@
  */
 
 const PLATFORM_URLS = {
+    xiaohongshu: "https://creator.xiaohongshu.com/publish/publish?source=official&target=image",
     zhihu: "https://zhuanlan.zhihu.com/write",
     juejin: "https://juejin.cn/editor/drafts/new?v=2",
     csdn: "https://editor.csdn.net/md/",
@@ -13,11 +14,89 @@ const PLATFORM_URLS = {
     threads: "https://www.threads.com/"
 };
 
+// 内存缓存完整任务（兼容小红书多张高清套卡 DataURL 大载荷传输）
+const activeTaskMemoryCache = new Map();
+
+function rememberTaskInMemory(taskId, taskPayload) {
+    activeTaskMemoryCache.set(taskId, taskPayload);
+    setTimeout(() => {
+        activeTaskMemoryCache.delete(taskId);
+    }, 30 * 60 * 1000);
+}
+
+async function resolveTaskXhsData(taskId) {
+    const mem = activeTaskMemoryCache.get(taskId);
+    if (mem?.article?.xhs?.imagesDataUrls?.length > 0) {
+        return mem.article.xhs;
+    }
+    const storage = await chrome.storage.local.get("currentTask");
+    const cur = storage.currentTask;
+    if (cur && cur.taskId === taskId && cur.article?.xhs?.imagesDataUrls?.length > 0) {
+        return cur.article.xhs;
+    }
+    if (cur && cur.taskId === taskId && cur.baseUrl && cur.token) {
+        try {
+            const resp = await fetch(`${cur.baseUrl}/api/v2/tasks/${taskId}/manifest`, {
+                headers: { "X-Matrix-Token": cur.token }
+            });
+            if (resp.ok) {
+                const json = await resp.json();
+                if (json?.data?.article) {
+                    rememberTaskInMemory(taskId, {
+                        baseUrl: cur.baseUrl,
+                        taskId,
+                        token: cur.token,
+                        article: json.data.article,
+                        platforms: json.data.platforms,
+                        receivedAt: cur.receivedAt
+                    });
+                    return json.data.article.xhs || null;
+                }
+            }
+        } catch (e) {}
+    }
+    return cur?.article?.xhs || null;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "MATRIX_HANDOFF") {
         handleBridgeHandoff(message.handoff)
             .then(() => sendResponse({ ok: true }))
             .catch(err => sendResponse({ ok: false, error: err.message }));
+        return true;
+    }
+
+    if (message.type === "GET_TASK_XHS_DATA") {
+        resolveTaskXhsData(message.taskId)
+            .then(xhs => sendResponse({ ok: Boolean(xhs), xhs }))
+            .catch(err => sendResponse({ ok: false, error: err.message }));
+        return true;
+    }
+
+    if (message.type === "DOWNLOAD_XHS_IMAGES") {
+        (async () => {
+            const images = Array.isArray(message.images) ? message.images.slice(0, 9) : [];
+            if (!images.length) {
+                sendResponse({ ok: false, error: "无套卡图片可下载" });
+                return;
+            }
+            const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+            let downloaded = 0;
+            for (let i = 0; i < images.length; i++) {
+                const dataUrl = images[i];
+                if (!dataUrl || typeof dataUrl !== "string") continue;
+                const ext = /^data:image\/jpeg/i.test(dataUrl) ? "jpg" : "png";
+                const filename = `metrix-xhs-${stamp}/${String(i + 1).padStart(2, "0")}.${ext}`;
+                await chrome.downloads.download({
+                    url: dataUrl,
+                    filename,
+                    conflictAction: "uniquify",
+                    saveAs: false
+                });
+                downloaded++;
+            }
+            sendResponse({ ok: downloaded > 0, count: downloaded });
+        })().catch(err => sendResponse({ ok: false, error: err.message }));
         return true;
     }
 
@@ -57,26 +136,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return true;
         }
 
-        chrome.scripting.executeScript({
-            target: { tabId },
-            world: "MAIN",
-            func: fillPlatformEditorInPage,
-            args: [
-                message.platformId,
-                message.title,
-                message.html,
-                message.markdown,
-                message.assets || [],
-                {
-                    digest: message.digest || "",
-                    tags: message.tags || [],
-                    coverBase64: message.coverBase64 || ""
-                }
-            ]
-        }).then(res => {
+        (async () => {
+            let xhsPayload = message.xhs || null;
+            if (message.platformId === "xiaohongshu" && (!xhsPayload || !xhsPayload.imagesDataUrls?.length)) {
+                xhsPayload = await resolveTaskXhsData(message.taskId);
+            }
+
+            const res = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: "MAIN",
+                func: fillPlatformEditorInPage,
+                args: [
+                    message.platformId,
+                    message.title,
+                    message.html,
+                    message.markdown,
+                    message.assets || [],
+                    {
+                        digest: message.digest || "",
+                        tags: message.tags || [],
+                        coverBase64: message.coverBase64 || "",
+                        xhs: xhsPayload
+                    }
+                ]
+            });
             const result = res && res[0] ? res[0].result : null;
             sendResponse({ ok: true, result });
-        }).catch(err => {
+        })().catch(err => {
             console.error("[Metrix Worker] executeScript error:", err);
             sendResponse({ ok: false, error: err.message });
         });
@@ -100,24 +186,44 @@ async function handleBridgeHandoff(handoff) {
     const json = await res.json();
     const taskData = json.data;
 
-    // 存储当前活跃任务
-    await chrome.storage.local.set({
-        currentTask: {
-            baseUrl,
-            taskId,
-            token,
-            article: taskData.article,
-            platforms: taskData.platforms,
-            receivedAt: Date.now()
+    const fullTask = {
+        baseUrl,
+        taskId,
+        token,
+        article: taskData.article,
+        platforms: taskData.platforms,
+        receivedAt: Date.now()
+    };
+    rememberTaskInMemory(taskId, fullTask);
+
+    // 存储当前活跃任务（遇超限异常自动降级剥离大图数组，改由内存/本地桥接按需拉取）
+    try {
+        await chrome.storage.local.set({ currentTask: fullTask });
+    } catch (storageErr) {
+        console.warn("[Metrix Worker] storage.local 写入大图降级为按需拉取:", storageErr);
+        const slimArticle = Object.assign({}, taskData.article);
+        if (slimArticle.xhs) {
+            slimArticle.xhs = Object.assign({}, slimArticle.xhs, { imagesDataUrls: [] });
         }
-    });
+        await chrome.storage.local.set({
+            currentTask: {
+                baseUrl,
+                taskId,
+                token,
+                article: slimArticle,
+                platforms: taskData.platforms,
+                receivedAt: fullTask.receivedAt
+            }
+        });
+    }
 
     // 依次打开所选平台的编辑页面
     for (const platform of taskData.platforms) {
         const editorUrl = PLATFORM_URLS[platform];
         if (editorUrl) {
             console.log(`[Metrix Worker] 正在打开平台编辑页: ${platform} -> ${editorUrl}`);
-            await chrome.tabs.create({ url: editorUrl, active: false });
+            const shouldFocus = taskData.platforms.length === 1 && platform === "xiaohongshu";
+            await chrome.tabs.create({ url: editorUrl, active: shouldFocus });
         }
     }
 }
@@ -1549,6 +1655,317 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
                 postText: payload.postText
             };
         }
+    }
+
+    // 7. 小红书图文创作平台 (模式 B: human_auto 拟人慢速填充 + 话题自动下拉点选变蓝，绝不点发布)
+    if (platformId === "xiaohongshu") {
+        // 双随机数叠加模拟正态分布人类操作停顿（严禁固定等间隔 sleep）
+        const humanJitterSleep = (minMs, maxMs) => {
+            const lo = Math.max(20, Number(minMs) || 300);
+            const hi = Math.max(lo + 10, Number(maxMs) || lo + 300);
+            const normalApprox = (Math.random() + Math.random()) / 2;
+            const delay = Math.round(lo + normalApprox * (hi - lo));
+            return new Promise(res => setTimeout(res, delay));
+        };
+
+        const xhs = meta.xhs || {};
+        if (xhs.mode !== "human_auto") {
+            return { ok: false, error: "当前为 safe_assist 零风控模式，禁止自动注入宿主页面" };
+        }
+
+        const isXhsLoginWall = () => {
+            if (location.pathname.includes("/login")) return true;
+            return Boolean(document.querySelector(".sso-login-wrapper") && !document.querySelector('input[type="file"], .creator-tab'));
+        };
+
+        if (isXhsLoginWall()) {
+            return { ok: false, error: "小红书创作平台尚未登录，请先扫码登录后重试" };
+        }
+
+        const findImageFileInput = () => {
+            const explicit = Array.from(document.querySelectorAll('input[type="file"][accept*="image"]'));
+            if (explicit.length > 0) return explicit[0];
+            const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+            for (const inp of allInputs) {
+                const acc = (inp.getAttribute("accept") || "").toLowerCase();
+                if (acc.includes("png") || acc.includes("jpg") || acc.includes("jpeg") || acc.includes("webp")) {
+                    return inp;
+                }
+                if (!acc.includes("video") && !acc.includes("mp4") && !acc.includes("mov")) {
+                    return inp;
+                }
+            }
+            return null;
+        };
+
+        // 1) 若尚未停留在「上传图文」Tab，先拟人点击切换（限定在创作页标签栏内查找可见 Tab）
+        const ensureImagePublishTab = async () => {
+            const tabCandidates = Array.from(document.querySelectorAll('.creator-tab, [role="tab"], .header-tabs .tab-item, .tabs .tab-item'));
+            const imageTab = tabCandidates.find(el => {
+                if (!isVisibleControl(el)) return false;
+                const t = (el.innerText || el.textContent || "").trim();
+                return t === "上传图文" || t === "发布图文";
+            });
+            if (imageTab && !imageTab.classList.contains("active") && imageTab.getAttribute("aria-selected") !== "true") {
+                imageTab.click();
+                await humanJitterSleep(1200, 2100);
+            }
+        };
+
+        const waitDeadline = Date.now() + 15000;
+        while (Date.now() < waitDeadline) {
+            if (isXhsLoginWall()) {
+                return { ok: false, error: "小红书创作平台尚未登录，请先扫码登录后重试" };
+            }
+            await ensureImagePublishTab();
+            if (findImageFileInput()) break;
+            await humanJitterSleep(260, 480);
+        }
+
+        // 2) 将 1~9 张图片 File[] 一次性挂载进小红书图文上传框
+        const rawDataUrls = Array.isArray(xhs.imagesDataUrls) ? xhs.imagesDataUrls.slice(0, 9) : [];
+        const files = [];
+        for (let i = 0; i < rawDataUrls.length; i++) {
+            const dUrl = rawDataUrls[i];
+            if (!dUrl || typeof dUrl !== "string") continue;
+            const mimeMatch = dUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,/);
+            const mime = mimeMatch ? mimeMatch[1] : "image/png";
+            const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
+            const f = base64ToFile(dUrl, `${String(i + 1).padStart(2, "0")}.${ext}`, mime);
+            if (f) files.push(f);
+        }
+
+        const fileInput = findImageFileInput();
+        if (!fileInput) {
+            return { ok: false, error: "未找到小红书图文上传控件，请确认页面停留在「上传图文」Tab" };
+        }
+        if (files.length > 0) {
+            await humanJitterSleep(1400, 2500);
+            const dt = new DataTransfer();
+            files.forEach(f => dt.items.add(f));
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event("input", { bubbles: true }));
+            fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        const findXhsTitleEl = () => {
+            const sels = [
+                'input[placeholder*="填写标题"]',
+                'input[placeholder*="标题"]',
+                '.titleInput input',
+                'input.d-text',
+                'input.c-input_inner',
+                'input[maxlength="20"]'
+            ];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el && isVisibleControl(el)) return el;
+            }
+            return null;
+        };
+
+        const findXhsBodyEl = () => {
+            const sels = [
+                '.tiptap.ProseMirror[contenteditable="true"]',
+                '.ProseMirror[contenteditable="true"]',
+                '#quillEditor [contenteditable="true"]',
+                '.editor-content [contenteditable="true"]',
+                '.editor-content',
+                'div[contenteditable="true"][role="textbox"]',
+                'div[contenteditable="true"]'
+            ];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el && isVisibleControl(el) && !el.closest('[class*="title"]')) return el;
+            }
+            return null;
+        };
+
+        // 等待图片上传后标题与正文编辑框挂载出来
+        const formDeadline = Date.now() + 20000;
+        let titleEl = null;
+        let bodyEl = null;
+        while (Date.now() < formDeadline) {
+            try {
+                const guideBtn = document.querySelector(".feature-guide__btn");
+                if (guideBtn && isVisibleControl(guideBtn)) guideBtn.click();
+            } catch (e) {}
+            titleEl = findXhsTitleEl();
+            bodyEl = findXhsBodyEl();
+            if (titleEl && bodyEl) break;
+            await humanJitterSleep(300, 560);
+        }
+
+        // 3) 拟人停顿 1.6s ~ 3.2s 后填入 <= 20 字短标题
+        const xhsTitle = truncateChars(xhs.title || title, 20);
+        if (titleEl && xhsTitle) {
+            await humanJitterSleep(1600, 3200);
+            setReactControlValue(titleEl, xhsTitle);
+        }
+
+        if (!bodyEl) {
+            return { ok: false, error: "图片已推入，但未检测到小红书正文编辑器，请手动补充文案" };
+        }
+
+        // 4) 拟人停顿 1.5s ~ 3.0s 后向正文编辑器填入纯净正文 bodyWithoutTags
+        const xhsBody = String(xhs.bodyWithoutTags || "").trim();
+        await humanJitterSleep(1500, 3000);
+        bodyEl.click?.();
+        bodyEl.focus?.();
+        try {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(bodyEl);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            if ((bodyEl.textContent || "").trim()) {
+                document.execCommand("delete", false, null);
+            }
+        } catch (e) {}
+
+        if (xhsBody) {
+            const pasteDt = new DataTransfer();
+            pasteDt.setData("text/plain", xhsBody);
+            pasteDt.setData("Text", xhsBody);
+            bodyEl.dispatchEvent(new ClipboardEvent("paste", {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                clipboardData: pasteDt
+            }));
+            await humanJitterSleep(360, 680);
+
+            const probe = xhsBody.replace(/\s+/g, " ").trim().slice(0, 14);
+            const curBodyTxt = (bodyEl.textContent || "").replace(/\s+/g, " ").trim();
+            if (probe && !curBodyTxt.includes(probe)) {
+                try {
+                    document.execCommand("insertText", false, xhsBody);
+                } catch (e) {
+                    bodyEl.textContent = xhsBody;
+                }
+                bodyEl.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: xhsBody }));
+                await humanJitterSleep(260, 520);
+            }
+        }
+
+        // 5) 对前 5 个 hashtags：拟人停顿后光标置尾插入 " #" + tag，唤醒话题联想并点击第 1 项变蓝
+        const hashtags = Array.isArray(xhs.hashtags) ? xhs.hashtags.slice(0, 5) : [];
+        let blueTagsCount = 0;
+
+        const moveCaretToEnd = (el) => {
+            el.focus?.();
+            try {
+                const sel = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            } catch (e) {}
+        };
+
+        const insertTextAtCaret = (el, txt) => {
+            moveCaretToEnd(el);
+            let inserted = false;
+            try {
+                inserted = document.execCommand("insertText", false, txt);
+            } catch (e) {}
+            if (!inserted) {
+                const textNode = document.createTextNode(txt);
+                el.appendChild(textNode);
+                moveCaretToEnd(el);
+            }
+            el.dispatchEvent(new InputEvent("input", {
+                bubbles: true,
+                cancelable: true,
+                inputType: "insertText",
+                data: txt
+            }));
+            const lastChar = txt.slice(-1) || "a";
+            el.dispatchEvent(new KeyboardEvent("keyup", { key: lastChar, bubbles: true }));
+        };
+
+        const findVisibleTopicCandidate = (tagName) => {
+            const topicSelectors = [
+                ".publish-topic-item",
+                "#creator-editor-topic-container .item",
+                '[class*="topic-list"] li',
+                '[class*="mention"] li',
+                '[class*="topic-container"] [class*="item"]',
+                '.tippy-box [class*="topic"] [class*="item"]',
+                '.tippy-box li'
+            ];
+            const visibleItems = [];
+            for (const sel of topicSelectors) {
+                const nodes = Array.from(document.querySelectorAll(sel));
+                for (const n of nodes) {
+                    if (!isVisibleControl(n)) continue;
+                    if (n.closest("header, nav, .topbar, .sidebar, #metrix-xhs-relay-host")) continue;
+                    const txt = (n.innerText || n.textContent || "").trim();
+                    if (!txt) continue;
+                    visibleItems.push(n);
+                }
+            }
+            if (!visibleItems.length) return null;
+            const exact = visibleItems.find(el => (el.innerText || el.textContent || "").includes(tagName));
+            return exact || visibleItems[0];
+        };
+
+        if (hashtags.length > 0 && xhsBody) {
+            insertTextAtCaret(bodyEl, "\n");
+        }
+
+        for (let i = 0; i < hashtags.length; i++) {
+            const cleanTag = String(hashtags[i] || "").replace(/^#+/, "").trim();
+            if (!cleanTag) continue;
+
+            await humanJitterSleep(1400, 2900);
+            insertTextAtCaret(bodyEl, " #" + cleanTag);
+
+            let candidate = null;
+            const popupDeadline = Date.now() + 2400;
+            while (Date.now() < popupDeadline) {
+                candidate = findVisibleTopicCandidate(cleanTag);
+                if (candidate) break;
+                await humanJitterSleep(110, 220);
+            }
+
+            if (candidate) {
+                const beforeTopicNodes = bodyEl.querySelectorAll('a, [data-type="mention"], [class*="topic"], span[style*="color"]').length;
+                await humanJitterSleep(450, 950);
+                try {
+                    candidate.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+                    candidate.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+                    candidate.click();
+                } catch (e) {}
+
+                await humanJitterSleep(180, 340);
+                let stillOpen = Boolean(findVisibleTopicCandidate(cleanTag));
+                if (stillOpen) {
+                    bodyEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+                    bodyEl.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+                    await humanJitterSleep(140, 260);
+                    stillOpen = Boolean(findVisibleTopicCandidate(cleanTag));
+                }
+                const afterTopicNodes = bodyEl.querySelectorAll('a, [data-type="mention"], [class*="topic"], span[style*="color"]').length;
+                if (!stillOpen || afterTopicNodes > beforeTopicNodes) {
+                    blueTagsCount++;
+                }
+            } else {
+                // 未弹出候选框时不卡死，补空格后继续下一个话题
+                insertTextAtCaret(bodyEl, " ");
+            }
+        }
+
+        // 6) 严禁自动点击最终「发布」按钮！
+        return {
+            ok: true,
+            editor: "xhs-human-auto",
+            uploadedCount: files.length,
+            titleLength: Array.from(xhsTitle).length,
+            blueTagsCount,
+            totalTags: hashtags.length
+        };
     }
 
     return null;

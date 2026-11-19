@@ -263,7 +263,7 @@ class MatrixBridgeServer {
 <body>
   <div class="card">
     <div class="spinner"></div>
-    <div class="badge">Metrix Dispatch v2.0</div>
+    <div class="badge">Metrix Dispatch v2.3.0</div>
     <h1>🚀 思源自媒体矩阵分发</h1>
     <div id="matrix-bridge-status">正在连接浏览器伴侣扩展，为你准备草稿...</div>
     <p class="hint">各大平台的草稿将在当前浏览器中就绪，最终发布由你人工核对后手动确认。</p>
@@ -431,14 +431,19 @@ class CoverRenderer {
     }
 
     static canvasToBuffer(canvas) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             canvas.toBlob((blob) => {
+                if (!blob) {
+                    reject(new Error("Canvas toBlob 返回为空"));
+                    return;
+                }
                 const reader = new FileReader();
                 reader.onloadend = () => {
                     const arrayBuffer = reader.result;
-                    const buffer = Buffer.from(arrayBuffer);
+                    const buffer = typeof Buffer !== "undefined" ? Buffer.from(arrayBuffer) : new Uint8Array(arrayBuffer);
                     resolve(buffer);
                 };
+                reader.onerror = () => reject(reader.error || new Error("FileReader 读取 Canvas 失败"));
                 reader.readAsArrayBuffer(blob);
             }, "image/png");
         });
@@ -446,6 +451,430 @@ class CoverRenderer {
 
     static canvasToDataURL(canvas) {
         return canvas.toDataURL("image/png");
+    }
+
+    /**
+     * 按像素宽度智能折行（保护英文单词/数字不被截断）
+     */
+    static wrapTextToLines(ctx, text, maxWidth) {
+        const clean = String(text || "").replace(/\s+/g, " ").trim();
+        if (!clean) return [];
+        const tokens = clean.match(/[a-zA-Z0-9_.\-+#@:/]+|\s+|[^\s]/g) || [clean];
+        const lines = [];
+        let cur = "";
+
+        for (const tok of tokens) {
+            const candidate = cur + tok;
+            if (ctx.measureText(candidate).width <= maxWidth) {
+                cur = candidate;
+                continue;
+            }
+            if (cur.trim()) {
+                lines.push(cur.trimEnd());
+                cur = tok.trimStart();
+            } else {
+                cur = tok;
+            }
+            // 单个超长英文/URL Token 硬折行
+            while (cur && ctx.measureText(cur).width > maxWidth) {
+                const chars = Array.from(cur);
+                let cut = chars.length - 1;
+                while (cut > 1 && ctx.measureText(chars.slice(0, cut).join("")).width > maxWidth) {
+                    cut--;
+                }
+                lines.push(chars.slice(0, cut).join(""));
+                cur = chars.slice(cut).join("");
+            }
+        }
+        if (cur.trim()) lines.push(cur.trimEnd());
+        return lines;
+    }
+
+    /**
+     * 将 Markdown 清洗并结构化为卡片排版块，保留标题/列表/引用视觉层级
+     */
+    static buildNewspicCardBlocks(markdown, title = "") {
+        let text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        text = text.replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/, "");
+        text = text.replace(/!\[[^\]]*\]\([^)]+\)/g, "");
+        text = text.replace(/<img\b[^>]*>/gi, "");
+        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => (label && label.trim() ? label.trim() : url));
+        text = text.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
+        text = text.replace(/(\*\*|__|~~|`)/g, "");
+
+        const normTitle = String(title || "").replace(/\s+/g, " ").trim();
+        const rawLines = text.split("\n");
+        const blocks = [];
+        let skippedDupTitle = false;
+
+        for (let i = 0; i < rawLines.length; i++) {
+            const line = rawLines[i].trim();
+            if (!line || /^(?:---|\*\*\*|___)$/.test(line)) continue;
+            if (!skippedDupTitle && normTitle && line.replace(/^#+\s+/, "").replace(/\s+/g, " ") === normTitle) {
+                skippedDupTitle = true;
+                continue;
+            }
+
+            const hMatch = line.match(/^#{1,4}[ \t]+(.+)$/);
+            if (hMatch) {
+                blocks.push({ type: "heading", text: hMatch[1].trim() });
+                continue;
+            }
+            const qMatch = line.match(/^>[ \t]?(.*)$/);
+            if (qMatch) {
+                const qText = qMatch[1].trim();
+                if (qText) blocks.push({ type: "quote", text: qText });
+                continue;
+            }
+            const ulMatch = line.match(/^[-*+][ \t]+(.+)$/);
+            if (ulMatch) {
+                blocks.push({ type: "bullet", marker: "•", text: ulMatch[1].trim() });
+                continue;
+            }
+            const olMatch = line.match(/^(\d+\.)[ \t]+(.+)$/);
+            if (olMatch) {
+                blocks.push({ type: "bullet", marker: olMatch[1], text: olMatch[2].trim() });
+                continue;
+            }
+            blocks.push({ type: "para", text: line });
+        }
+
+        if (blocks.length === 0 && normTitle) {
+            blocks.push({ type: "para", text: normTitle });
+        }
+        return blocks;
+    }
+
+    /**
+     * 无图自动兜底：纯前端 Canvas 生成 1080×1440 (3:4) 高颜值极客卡片组（自动折行分页 1~4 张）
+     */
+    static async renderNewspicCards({ title = "", markdown = "", author = "", capsule = "", theme = "light", maxCards = 4 } = {}) {
+        const width = 1080;
+        const height = 1440;
+        const isDark = theme === "dark";
+        const palette = isDark
+            ? {
+                outerBg: "#070b14",
+                dot: "rgba(148, 163, 184, 0.14)",
+                cardBg: "#0f172a",
+                cardBorder: "#1e293b",
+                title: "#f8fafc",
+                heading: "#38bdf8",
+                body: "#cbd5e1",
+                muted: "#94a3b8",
+                accent: "#38bdf8",
+                accentSoft: "rgba(56, 189, 248, 0.14)",
+                quoteBg: "rgba(30, 41, 59, 0.85)",
+                divider: "#1e293b"
+            }
+            : {
+                outerBg: "#f1f5f9",
+                dot: "rgba(100, 116, 139, 0.16)",
+                cardBg: "#ffffff",
+                cardBorder: "#e2e8f0",
+                title: "#0f172a",
+                heading: "#0f172a",
+                body: "#334155",
+                muted: "#64748b",
+                accent: "#0284c7",
+                accentSoft: "rgba(2, 132, 199, 0.09)",
+                quoteBg: "#f0f9ff",
+                divider: "#e2e8f0"
+            };
+
+        const cleanTitle = String(title || "").replace(/^[#\s]+/, "").trim() || "思源精选笔记";
+        const cleanCapsule = String(capsule || "").trim() || "【极客手记 · 图文精选】";
+        const cleanAuthor = String(author || "").trim() || "Metrix";
+        const fontFamily = "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif";
+
+        // 测量专用临时画布
+        const measureCanvas = document.createElement("canvas");
+        measureCanvas.width = width;
+        measureCanvas.height = height;
+        const mCtx = measureCanvas.getContext("2d");
+        if (!mCtx) {
+            throw new Error("Canvas 2D 测量上下文初始化失败");
+        }
+
+        const padX = 112;
+        const contentW = width - padX * 2; // 856px
+        const bottomLimitY = 1265;
+
+        mCtx.font = `800 46px ${fontFamily}`;
+        const heroTitleLines = this.wrapTextToLines(mCtx, cleanTitle, contentW).slice(0, 3);
+        const firstCardStartY = 178 + heroTitleLines.length * 64 + 50;
+        const nextCardStartY = 196;
+
+        const rawBlocks = this.buildNewspicCardBlocks(markdown, cleanTitle);
+
+        // 先将块转化为按行度量好的渲染单元
+        const items = [];
+        for (const blk of rawBlocks) {
+            if (blk.type === "heading") {
+                mCtx.font = `700 34px ${fontFamily}`;
+                const lines = this.wrapTextToLines(mCtx, blk.text, contentW - 22);
+                items.push({ type: "heading", lines, lineH: 48, gapTop: 18, gapBottom: 10 });
+            } else if (blk.type === "quote") {
+                mCtx.font = `500 30px ${fontFamily}`;
+                const lines = this.wrapTextToLines(mCtx, blk.text, contentW - 44);
+                items.push({ type: "quote", lines, lineH: 46, gapTop: 10, gapBottom: 16 });
+            } else if (blk.type === "bullet") {
+                mCtx.font = `400 31px ${fontFamily}`;
+                const lines = this.wrapTextToLines(mCtx, blk.text, contentW - 42);
+                items.push({ type: "bullet", marker: blk.marker, lines, lineH: 50, gapTop: 6, gapBottom: 12 });
+            } else {
+                mCtx.font = `400 31px ${fontFamily}`;
+                const lines = this.wrapTextToLines(mCtx, blk.text, contentW);
+                items.push({ type: "para", lines, lineH: 50, gapTop: 4, gapBottom: 18 });
+            }
+        }
+
+        // 自动分页到 1..maxCards 张卡片
+        const pages = [[]];
+        let curY = firstCardStartY;
+        let truncatedOverflow = false;
+
+        for (let idx = 0; idx < items.length; idx++) {
+            const it = items[idx];
+            const pageIndex = pages.length - 1;
+            const totalItemH = it.gapTop + it.lines.length * it.lineH + (it.type === "quote" ? 24 : 0) + it.gapBottom;
+
+            if (curY + totalItemH <= bottomLimitY) {
+                pages[pageIndex].push(it);
+                curY += totalItemH;
+                continue;
+            }
+
+            // 如果当前页剩余空间足够放 >= 2 行普通段落，拆分折行续页
+            if (it.type === "para" && it.lines.length >= 3) {
+                const availLines = Math.floor((bottomLimitY - curY - it.gapTop - it.gapBottom) / it.lineH);
+                if (availLines >= 2) {
+                    const headPart = { ...it, lines: it.lines.slice(0, availLines) };
+                    const tailPart = { ...it, lines: it.lines.slice(availLines) };
+                    pages[pageIndex].push(headPart);
+                    items.splice(idx + 1, 0, tailPart);
+                    if (pages.length < maxCards) {
+                        pages.push([]);
+                        curY = nextCardStartY;
+                        continue;
+                    } else {
+                        truncatedOverflow = true;
+                        break;
+                    }
+                }
+            }
+
+            if (pages.length < maxCards) {
+                pages.push([]);
+                curY = nextCardStartY;
+                idx--; // 放到下一页重排版
+            } else {
+                // 最后一页兜底尽可能放入剩余行
+                const availLines = Math.floor((bottomLimitY - curY - it.gapTop - 10) / it.lineH);
+                if (availLines >= 1 && it.lines.length > 0) {
+                    pages[pageIndex].push({ ...it, lines: it.lines.slice(0, availLines) });
+                }
+                truncatedOverflow = true;
+                break;
+            }
+        }
+
+        if (truncatedOverflow) {
+            const lastPage = pages[pages.length - 1];
+            lastPage.push({ type: "ellipsis", lines: ["……（完整细节见正文笔记）"], lineH: 42, gapTop: 8, gapBottom: 6 });
+        }
+
+        const totalPages = pages.length;
+        const renderedCards = [];
+
+        for (let p = 0; p < totalPages; p++) {
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+                throw new Error(`Canvas 2D 绘制上下文初始化失败 (第 ${p + 1} 张)`);
+            }
+
+            // 外层背景与精致点阵
+            ctx.fillStyle = palette.outerBg;
+            ctx.fillRect(0, 0, width, height);
+            ctx.fillStyle = palette.dot;
+            for (let gx = 24; gx < width; gx += 36) {
+                for (let gy = 24; gy < height; gy += 36) {
+                    ctx.beginPath();
+                    ctx.arc(gx, gy, 1.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // 居中主卡片阴影与边框
+            ctx.save();
+            ctx.shadowColor = isDark ? "rgba(0, 0, 0, 0.55)" : "rgba(15, 23, 42, 0.08)";
+            ctx.shadowBlur = 34;
+            ctx.shadowOffsetY = 12;
+            ctx.fillStyle = palette.cardBg;
+            ctx.beginPath();
+            ctx.roundRect(48, 48, width - 96, height - 96, 28);
+            ctx.fill();
+            ctx.restore();
+
+            ctx.strokeStyle = palette.cardBorder;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.roundRect(48, 48, width - 96, height - 96, 28);
+            ctx.stroke();
+
+            // 顶部极客蓝渐变装饰条
+            ctx.save();
+            ctx.beginPath();
+            ctx.roundRect(48, 48, width - 96, height - 96, 28);
+            ctx.clip();
+            const barGrad = ctx.createLinearGradient(48, 48, width - 48, 48);
+            barGrad.addColorStop(0, "#0284c7");
+            barGrad.addColorStop(1, "#38bdf8");
+            ctx.fillStyle = barGrad;
+            ctx.fillRect(48, 48, width - 96, 10);
+            ctx.restore();
+
+            let drawY = 0;
+            if (p === 0) {
+                // Card 1: 顶部胶囊 + 巨幕标题 + 分割短条
+                ctx.font = `700 22px ${fontFamily}`;
+                const capW = Math.min(contentW, ctx.measureText(cleanCapsule).width + 36);
+                ctx.fillStyle = palette.accentSoft;
+                ctx.beginPath();
+                ctx.roundRect(padX, 102, capW, 44, 10);
+                ctx.fill();
+                ctx.fillStyle = palette.accent;
+                ctx.textBaseline = "middle";
+                ctx.fillText(cleanCapsule, padX + 18, 124, contentW - 36);
+
+                ctx.font = `800 46px ${fontFamily}`;
+                ctx.fillStyle = palette.title;
+                ctx.textBaseline = "top";
+                let ty = 178;
+                for (const tLine of heroTitleLines) {
+                    ctx.fillText(tLine, padX, ty);
+                    ty += 64;
+                }
+
+                const sepGrad = ctx.createLinearGradient(padX, ty + 14, padX + 120, ty + 14);
+                sepGrad.addColorStop(0, "#0284c7");
+                sepGrad.addColorStop(1, "#38bdf8");
+                ctx.fillStyle = sepGrad;
+                ctx.beginPath();
+                ctx.roundRect(padX, ty + 12, 110, 6, 3);
+                ctx.fill();
+                drawY = firstCardStartY;
+            } else {
+                // Card 2..N: 顶部紧凑导读条
+                ctx.font = `600 23px ${fontFamily}`;
+                ctx.fillStyle = palette.muted;
+                ctx.textBaseline = "top";
+                const shortHeader = Array.from(cleanTitle).slice(0, 26).join("") + (Array.from(cleanTitle).length > 26 ? "…" : "");
+                ctx.fillText(shortHeader, padX, 104);
+                ctx.strokeStyle = palette.divider;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(padX, 154);
+                ctx.lineTo(width - padX, 154);
+                ctx.stroke();
+                drawY = nextCardStartY;
+            }
+
+            // 绘制正文内容块
+            ctx.textBaseline = "top";
+            for (const blk of pages[p]) {
+                drawY += blk.gapTop;
+                if (blk.type === "heading") {
+                    const hHeight = blk.lines.length * blk.lineH;
+                    ctx.fillStyle = palette.accent;
+                    ctx.beginPath();
+                    ctx.roundRect(padX, drawY + 6, 8, Math.max(28, hHeight - 12), 4);
+                    ctx.fill();
+                    ctx.font = `700 34px ${fontFamily}`;
+                    ctx.fillStyle = palette.heading;
+                    for (const line of blk.lines) {
+                        ctx.fillText(line, padX + 22, drawY);
+                        drawY += blk.lineH;
+                    }
+                } else if (blk.type === "quote") {
+                    const qBoxH = blk.lines.length * blk.lineH + 24;
+                    ctx.fillStyle = palette.quoteBg;
+                    ctx.beginPath();
+                    ctx.roundRect(padX, drawY, contentW, qBoxH, 12);
+                    ctx.fill();
+                    ctx.fillStyle = palette.accent;
+                    ctx.fillRect(padX, drawY, 6, qBoxH);
+                    ctx.font = `500 30px ${fontFamily}`;
+                    ctx.fillStyle = palette.body;
+                    let qy = drawY + 12;
+                    for (const line of blk.lines) {
+                        ctx.fillText(line, padX + 24, qy);
+                        qy += blk.lineH;
+                    }
+                    drawY += qBoxH;
+                } else if (blk.type === "bullet") {
+                    ctx.font = `700 30px ${fontFamily}`;
+                    ctx.fillStyle = palette.accent;
+                    ctx.fillText(blk.marker, padX, drawY);
+                    ctx.font = `400 31px ${fontFamily}`;
+                    ctx.fillStyle = palette.body;
+                    for (const line of blk.lines) {
+                        ctx.fillText(line, padX + 42, drawY);
+                        drawY += blk.lineH;
+                    }
+                } else if (blk.type === "ellipsis") {
+                    ctx.font = `600 26px ${fontFamily}`;
+                    ctx.fillStyle = palette.muted;
+                    ctx.fillText(blk.lines[0], padX, drawY);
+                    drawY += blk.lineH;
+                } else {
+                    ctx.font = `400 31px ${fontFamily}`;
+                    ctx.fillStyle = palette.body;
+                    for (const line of blk.lines) {
+                        ctx.fillText(line, padX, drawY);
+                        drawY += blk.lineH;
+                    }
+                }
+                drawY += blk.gapBottom;
+            }
+
+            // 底部栏：作者署名 + 页码胶囊
+            ctx.strokeStyle = palette.divider;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(padX, 1296);
+            ctx.lineTo(width - padX, 1296);
+            ctx.stroke();
+
+            ctx.font = `600 24px ${fontFamily}`;
+            ctx.fillStyle = palette.muted;
+            ctx.textBaseline = "middle";
+            ctx.fillText(`@ ${cleanAuthor}`, padX, 1338);
+
+            const pageStr = `${String(p + 1).padStart(2, "0")} / ${String(totalPages).padStart(2, "0")}`;
+            const pageW = ctx.measureText(pageStr).width + 30;
+            ctx.fillStyle = palette.accentSoft;
+            ctx.beginPath();
+            ctx.roundRect(width - padX - pageW, 1318, pageW, 40, 20);
+            ctx.fill();
+            ctx.fillStyle = palette.accent;
+            ctx.fillText(pageStr, width - padX - pageW + 15, 1338);
+
+            const dataUrl = this.canvasToDataURL(canvas);
+            const buffer = await this.canvasToBuffer(canvas);
+            renderedCards.push({
+                buffer,
+                dataUrl,
+                mimeType: "image/png",
+                ext: "png",
+                filename: `metrix_card_${String(p + 1).padStart(2, "0")}.png`
+            });
+        }
+
+        return renderedCards;
     }
 }
 
@@ -668,6 +1097,8 @@ class DocParser {
             referencedAssets.push({ alt, relPath, filename: assetFilename });
         }
 
+        const orderedImages = this.extractOrderedImages(cleanMd, realDocId);
+
         let dataDir = "";
         try {
             if (typeof window !== "undefined" && window.siyuan?.config?.system) {
@@ -702,7 +1133,186 @@ class DocParser {
         // 8. 规范化引用块与后续普通正文之间的空行，防止 CommonMark 懒引用延续导致正文全部坍缩进引用框
         finalBodyMd = finalBodyMd.replace(/(^>[^\r\n]*)(\r?\n)(?!>|\r?\n)/gm, "$1$2\n");
 
-        return { docId: realDocId, boxId, hpath, title: detectedTitle, digest, markdown: finalBodyMd, referencedAssets, dataDir };
+        return { docId: realDocId, boxId, hpath, title: detectedTitle, digest, markdown: finalBodyMd, referencedAssets, orderedImages, dataDir };
+    }
+
+    /**
+     * 按出现顺序提取文档中的全部图片（支持 /assets/...、assets/... 及 http(s) 图，必要时回查 DOM）
+     */
+    static extractOrderedImages(markdown = "", docId = "", maxCount = 20) {
+        const candidates = [];
+        const mdImgRegex = /!\[([^\]]*)\]\(([^)\n]+?)(?:\s+"[^"]*")?\)/g;
+        let m;
+        while ((m = mdImgRegex.exec(markdown || "")) !== null) {
+            candidates.push({ index: m.index, alt: (m[1] || "").trim(), rawSrc: (m[2] || "").trim() });
+        }
+
+        const htmlImgRegex = /<img\b[^>]*\bsrc=["']([^"'\s>]+)["'][^>]*>/gi;
+        while ((m = htmlImgRegex.exec(markdown || "")) !== null) {
+            candidates.push({ index: m.index, alt: "", rawSrc: (m[1] || "").trim() });
+        }
+
+        candidates.sort((a, b) => a.index - b.index);
+
+        const normalizeSrc = (src) => {
+            if (!src) return null;
+            const clean = src.replace(/^<|>$/g, "").trim();
+            if (/^https?:\/\//i.test(clean) || /^data:image\//i.test(clean)) {
+                return { src: clean, isLocal: false, relPath: "" };
+            }
+            if (/^(?:\.?\.?\/)?assets\//i.test(clean)) {
+                const relPath = clean.replace(/^(?:\.+\/)+/, "").replace(/^\/+/, "");
+                return { src: relPath, isLocal: true, relPath };
+            }
+            return null;
+        };
+
+        const results = [];
+        const seen = new Set();
+        for (const item of candidates) {
+            const norm = normalizeSrc(item.rawSrc);
+            if (!norm) continue;
+            const key = norm.isLocal ? norm.relPath : norm.src;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            results.push({
+                src: norm.src,
+                isLocal: norm.isLocal,
+                relPath: norm.relPath,
+                alt: item.alt,
+                filename: key.split("/").pop().split("?")[0] || `image_${results.length + 1}.png`
+            });
+            if (results.length >= maxCount) return results;
+        }
+
+        // DOM 兜底：当 Markdown 未提取到图片时，读取当前激活编辑器 DOM 内展示的图片
+        if (results.length === 0 && typeof document !== "undefined") {
+            const scope = (docId && document.querySelector(`.protyle-wysiwyg[data-node-id="${docId}"]`))
+                || document.querySelector(".layout__center .protyle:not(.fn__none) .protyle-wysiwyg")
+                || document.querySelector(".protyle-wysiwyg");
+            if (scope) {
+                const imgs = Array.from(scope.querySelectorAll("img"));
+                for (const imgEl of imgs) {
+                    const rawSrc = imgEl.getAttribute("data-src") || imgEl.getAttribute("src") || "";
+                    if (!rawSrc || rawSrc.includes("/emojis/") || rawSrc.includes("/appearance/") || rawSrc.startsWith("data:image/svg")) {
+                        continue;
+                    }
+                    const norm = normalizeSrc(rawSrc);
+                    if (!norm) continue;
+                    const key = norm.isLocal ? norm.relPath : norm.src;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    results.push({
+                        src: norm.src,
+                        isLocal: norm.isLocal,
+                        relPath: norm.relPath,
+                        alt: imgEl.getAttribute("alt") || "",
+                        filename: key.split("/").pop().split("?")[0] || `image_${results.length + 1}.png`
+                    });
+                    if (results.length >= maxCount) break;
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * 解析小红书图文数据：<=20字短标题 + 剥离末尾 #话题 的纯净正文 + 独立话题词数组（去 # 号）
+     */
+    static parseXiaohongshuContent(markdown = "", title = "", fallbackTagsStr = "") {
+        let text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        text = text.replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/, "");
+        text = text.replace(/!\[[^\]]*\]\([^)]+\)/g, "");
+        text = text.replace(/<img\b[^>]*>/gi, "");
+        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => (label && label.trim() ? label.trim() : url));
+        text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+        text = text.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
+        text = text.replace(/^#{1,6}[ \t]+/gm, "");
+        text = text.replace(/^>[ \t]?/gm, "");
+        text = text.replace(/^(?:---|\*\*\*|___)$/gm, "");
+        text = text.replace(/(\*\*|__|~~|`)/g, "");
+
+        const cleanTitleRaw = String(title || "").replace(/^[#\s]+/, "").trim() || "思源图文手记";
+        const xhsTitle = Array.from(cleanTitleRaw).slice(0, 20).join("");
+
+        // 剥离开头与标题重复的首行
+        const lines = text.split("\n");
+        if (lines.length > 0 && lines[0].trim().replace(/\s+/g, " ") === cleanTitleRaw.replace(/\s+/g, " ")) {
+            lines.shift();
+        }
+
+        // 提取全部有效 #话题（过滤十六进制色号与纯数字）
+        const hashtags = [];
+        const tagSeen = new Set();
+        const addTag = (rawTag) => {
+            const cleanTag = String(rawTag || "").replace(/^#+/, "").replace(/\[话题\]#?$/g, "").trim();
+            if (!cleanTag || cleanTag.length > 30) return;
+            if (/^[0-9a-fA-F]{3,8}$/.test(cleanTag) || /^\d+$/.test(cleanTag)) return;
+            if (!tagSeen.has(cleanTag)) {
+                tagSeen.add(cleanTag);
+                hashtags.push(cleanTag);
+            }
+        };
+
+        const tagBodyPattern = "[^\\s#\\n\\r\\[\\],，。；;！!？?、]{1,30}";
+        const tagRegex = new RegExp(`(?:^|[\\s，,。；;！!？?、])#(${tagBodyPattern})(?:\\[话题\\]#)?`, "g");
+        const fullClean = lines.join("\n");
+        let tm;
+        while ((tm = tagRegex.exec(fullClean)) !== null) {
+            addTag(tm[1]);
+        }
+
+        // 从末尾向上剥离全部仅由 #话题 / 标签引导词构成的尾部段落或行尾连续 #话题 簇
+        const trailingClusterRe = new RegExp(`(?:[\\s,，、;；]*#${tagBodyPattern}(?:\\[话题\\]#)?)+$`, "g");
+        const stripAnyTagRe = new RegExp(`#${tagBodyPattern}(?:\\[话题\\]#)?`, "g");
+        const anyTagTestRe = new RegExp(`#${tagBodyPattern}`);
+        const stripInlineTagCluster = (line) => {
+            return line
+                .replace(trailingClusterRe, "")
+                .replace(/^(?:标签|话题|Tags?)\s*[：:]\s*$/i, "")
+                .trimEnd();
+        };
+
+        while (lines.length > 0) {
+            const lastRaw = lines[lines.length - 1].trim();
+            if (!lastRaw) {
+                lines.pop();
+                continue;
+            }
+            const withoutPrefix = lastRaw.replace(/^(?:标签|话题|Tags?)\s*[：:]\s*/i, "");
+            const leftAfterTags = withoutPrefix.replace(stripAnyTagRe, "").replace(/[,，、;；\s]/g, "");
+            if (anyTagTestRe.test(lastRaw) && !leftAfterTags) {
+                lines.pop();
+                continue;
+            }
+            const strippedTail = stripInlineTagCluster(lines[lines.length - 1]);
+            if (strippedTail !== lines[lines.length - 1]) {
+                if (strippedTail.trim()) {
+                    lines[lines.length - 1] = strippedTail;
+                } else {
+                    lines.pop();
+                }
+            }
+            break;
+        }
+
+        let bodyWithoutTags = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+        // 若正文完全无 #话题，则回退解析插件默认标签
+        if (hashtags.length === 0 && fallbackTagsStr) {
+            String(fallbackTagsStr)
+                .split(/[,，\s]+/)
+                .map(s => s.replace(/^#+/, "").trim())
+                .filter(Boolean)
+                .forEach(addTag);
+        }
+
+        return {
+            title: xhsTitle,
+            bodyWithoutTags,
+            hashtags: hashtags.slice(0, 10)
+        };
     }
 }
 
@@ -782,6 +1392,258 @@ class ThemeEngine {
                     reader.onerror = () => resolve(null);
                     reader.readAsDataURL(blob);
                 });
+            }
+        } catch (e) {}
+
+        return null;
+    }
+
+    static guessMimeFromName(nameOrUrl = "") {
+        const clean = String(nameOrUrl || "").split("?")[0].split("#")[0].toLowerCase();
+        if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+        if (clean.endsWith(".gif")) return "image/gif";
+        if (clean.endsWith(".webp")) return "image/webp";
+        if (clean.endsWith(".bmp")) return "image/bmp";
+        if (clean.endsWith(".svg")) return "image/svg+xml";
+        return "image/png";
+    }
+
+    static mimeToExt(mimeType = "image/png") {
+        const m = String(mimeType || "").toLowerCase();
+        if (m.includes("jpeg") || m.includes("jpg")) return "jpg";
+        if (m.includes("gif")) return "gif";
+        if (m.includes("bmp")) return "bmp";
+        if (m.includes("webp")) return "webp";
+        if (m.includes("svg")) return "svg";
+        return "png";
+    }
+
+    static bufferToDataUrl(buf, mimeType = "image/png") {
+        if (!buf) return null;
+        if (typeof Buffer !== "undefined" && Buffer.isBuffer(buf)) {
+            return `data:${mimeType};base64,${buf.toString("base64")}`;
+        }
+        const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+            bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        return `data:${mimeType};base64,${btoa(bin)}`;
+    }
+
+    static fetchRemoteImageBuffer(targetUrl, redirectsLeft = 3) {
+        if (!http || !https) {
+            return (async () => {
+                const r = await fetch(targetUrl);
+                if (!r.ok) return null;
+                const ct = (r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+                if (ct && !ct.startsWith("image/")) return null;
+                const arrBuf = await r.arrayBuffer();
+                return {
+                    buffer: typeof Buffer !== "undefined" ? Buffer.from(arrBuf) : new Uint8Array(arrBuf),
+                    mimeType: ct || this.guessMimeFromName(targetUrl)
+                };
+            })();
+        }
+
+        return new Promise((resolve) => {
+            try {
+                const parsed = new URL(targetUrl);
+                const client = parsed.protocol === "http:" ? http : https;
+                const req = client.request(
+                    {
+                        hostname: parsed.hostname,
+                        port: parsed.port || (parsed.protocol === "http:" ? 80 : 443),
+                        path: parsed.pathname + parsed.search,
+                        method: "GET",
+                        headers: {
+                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
+                            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+                        },
+                        agent: false
+                    },
+                    (res) => {
+                        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+                            const nextUrl = new URL(res.headers.location, targetUrl).href;
+                            res.resume();
+                            resolve(this.fetchRemoteImageBuffer(nextUrl, redirectsLeft - 1));
+                            return;
+                        }
+                        if (res.statusCode < 200 || res.statusCode >= 300) {
+                            res.resume();
+                            resolve(null);
+                            return;
+                        }
+                        const ct = (res.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+                        if (ct && !ct.startsWith("image/") && !ct.includes("octet-stream")) {
+                            res.resume();
+                            resolve(null);
+                            return;
+                        }
+                        const chunks = [];
+                        res.on("data", c => chunks.push(c));
+                        res.on("end", () => {
+                            const buffer = Buffer.concat(chunks);
+                            if (!buffer.length) {
+                                resolve(null);
+                                return;
+                            }
+                            const mimeType = (ct && ct.startsWith("image/")) ? ct : this.guessMimeFromName(targetUrl);
+                            resolve({ buffer, mimeType });
+                        });
+                    }
+                );
+                req.setTimeout(15000, () => {
+                    req.destroy();
+                    resolve(null);
+                });
+                req.on("error", () => resolve(null));
+                req.end();
+            } catch (e) {
+                resolve(null);
+            }
+        });
+    }
+
+    /**
+     * 将 webp / svg / avif 等浏览器图片通过 Canvas 转为通用 PNG，确保微信素材库与小红书 100% 兼容
+     */
+    static async ensureUniversalPngIfNeeded(buffer, mimeType, filename = "image.png") {
+        const lower = String(mimeType || "").toLowerCase();
+        if (lower === "image/png" || lower === "image/jpeg" || lower === "image/jpg" || lower === "image/gif" || lower === "image/bmp") {
+            const normMime = lower === "image/jpg" ? "image/jpeg" : lower;
+            return {
+                buffer,
+                mimeType: normMime,
+                dataUrl: this.bufferToDataUrl(buffer, normMime),
+                ext: this.mimeToExt(normMime),
+                filename
+            };
+        }
+        if (typeof document !== "undefined" && typeof Image !== "undefined") {
+            try {
+                const srcDataUrl = this.bufferToDataUrl(buffer, lower || "image/webp");
+                const img = await new Promise((resolve, reject) => {
+                    const el = new Image();
+                    el.onload = () => resolve(el);
+                    el.onerror = reject;
+                    el.src = srcDataUrl;
+                });
+                const canvas = document.createElement("canvas");
+                canvas.width = img.naturalWidth || img.width || 1080;
+                canvas.height = img.naturalHeight || img.height || 1440;
+                const ctx = canvas.getContext("2d");
+                ctx.fillStyle = "#ffffff";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                const pngDataUrl = canvas.toDataURL("image/png");
+                const b64 = pngDataUrl.split(",")[1] || "";
+                const pngBuffer = typeof Buffer !== "undefined" ? Buffer.from(b64, "base64") : buffer;
+                const safeName = filename.replace(/\.[^.]+$/, "") + ".png";
+                return {
+                    buffer: pngBuffer,
+                    mimeType: "image/png",
+                    dataUrl: pngDataUrl,
+                    ext: "png",
+                    filename: safeName
+                };
+            } catch (e) {
+                console.warn("[Metrix] 图片转 PNG 降级失败，保留原格式:", filename, e);
+            }
+        }
+        return {
+            buffer,
+            mimeType: lower || "image/png",
+            dataUrl: this.bufferToDataUrl(buffer, lower || "image/png"),
+            ext: this.mimeToExt(lower),
+            filename
+        };
+    }
+
+    /**
+     * 读取任意思源图片资源（支持 /assets/...、assets/...、http(s) 与 data:image）并返回 { buffer, dataUrl, mimeType, ext, filename }
+     */
+    static async resolveImagePayload(imgItem, dataDir = "") {
+        if (!imgItem || !imgItem.src) return null;
+        const src = String(imgItem.src).trim();
+        const filename = imgItem.filename || "image.png";
+        const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 微信素材库单图硬上限 10MB
+
+        const finalizePayload = async (buf, mimeType, name) => {
+            const len = buf?.byteLength ?? buf?.length ?? 0;
+            if (!buf || len === 0 || len > MAX_IMAGE_BYTES) {
+                console.warn("[Metrix] 图片体积超限(>10MB)或为空，已跳过:", name, len);
+                return null;
+            }
+            return this.ensureUniversalPngIfNeeded(buf, mimeType, name);
+        };
+
+        if (src.startsWith("data:image/")) {
+            const match = src.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s);
+            if (!match) return null;
+            const mimeType = match[1].toLowerCase();
+            const buffer = typeof Buffer !== "undefined" ? Buffer.from(match[2], "base64") : null;
+            return finalizePayload(buffer, mimeType, filename);
+        }
+
+        if (/^https?:\/\//i.test(src)) {
+            const remote = await this.fetchRemoteImageBuffer(src);
+            if (!remote || !remote.buffer || !remote.buffer.length) return null;
+            return finalizePayload(remote.buffer, remote.mimeType, filename);
+        }
+
+        // 本地思源 assets/... 资源：规范化路径并严格限制在 assets/ 目录内（防 ../ 穿越）
+        const rawRel = (imgItem.relPath || src).replace(/\\/g, "/").replace(/^(?:\.+\/)+/, "").replace(/^\/+/, "");
+        const segments = rawRel.split("/").filter(Boolean);
+        if (segments[0] !== "assets" || segments.includes("..")) {
+            console.warn("[Metrix] 非法本地资源路径，已拦截:", src);
+            return null;
+        }
+        const cleanRel = segments.join("/");
+
+        try {
+            const apiRes = await fetch("/api/file/getFile", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: "/data/" + cleanRel })
+            });
+            if (apiRes.ok) {
+                const ct = (apiRes.headers.get("content-type") || "").toLowerCase();
+                if (!ct.includes("application/json")) {
+                    const arrBuf = await apiRes.arrayBuffer();
+                    if (arrBuf && arrBuf.byteLength > 0) {
+                        const buf = typeof Buffer !== "undefined" ? Buffer.from(arrBuf) : new Uint8Array(arrBuf);
+                        const mimeType = ct.startsWith("image/") ? ct.split(";")[0].trim() : this.guessMimeFromName(cleanRel);
+                        return finalizePayload(buf, mimeType, filename);
+                    }
+                }
+            }
+        } catch (e) {}
+
+        if (fs && path && dataDir) {
+            try {
+                const assetsRoot = path.resolve(dataDir, "assets");
+                const diskPath = path.resolve(dataDir, cleanRel);
+                if (diskPath.startsWith(assetsRoot + path.sep) && fs.existsSync(diskPath)) {
+                    const buf = fs.readFileSync(diskPath);
+                    if (buf && buf.length > 0) {
+                        const mimeType = this.guessMimeFromName(diskPath);
+                        return finalizePayload(buf, mimeType, filename);
+                    }
+                }
+            } catch (e) {}
+        }
+
+        try {
+            const staticRes = await fetch("/" + cleanRel);
+            if (staticRes.ok) {
+                const arrBuf = await staticRes.arrayBuffer();
+                if (arrBuf && arrBuf.byteLength > 0) {
+                    const ct = (staticRes.headers.get("content-type") || "").toLowerCase();
+                    const buf = typeof Buffer !== "undefined" ? Buffer.from(arrBuf) : new Uint8Array(arrBuf);
+                    const mimeType = ct.startsWith("image/") ? ct.split(";")[0].trim() : this.guessMimeFromName(cleanRel);
+                    return finalizePayload(buf, mimeType, filename);
+                }
             }
         } catch (e) {}
 
@@ -1344,11 +2206,12 @@ class WeChatOfficialApi {
         return resp.access_token;
     }
 
-    static async uploadPermanentCover(token, coverBuffer) {
+    static async uploadPermanentImage(token, imageBuffer, filename = "cover.png", mimeType = "image/png") {
         if (!https || typeof Buffer === "undefined") {
             throw new Error("当前运行环境不支持二进制素材直传，请在思源桌面端使用微信公众号直连");
         }
-        const { boundary, bodyBuffer } = this.buildMultipartBuffer(coverBuffer, "cover.png", "image/png", "media");
+        const safeMime = mimeType === "image/jpg" ? "image/jpeg" : (mimeType || "image/png");
+        const { boundary, bodyBuffer } = this.buildMultipartBuffer(imageBuffer, filename || "image.png", safeMime, "media");
         const resp = await this.requestRaw({
             method: "POST",
             apiPath: `/cgi-bin/material/add_material?access_token=${encodeURIComponent(token)}&type=image`,
@@ -1357,11 +2220,15 @@ class WeChatOfficialApi {
             timeoutMs: 40000
         });
         if (!resp || !resp.media_id) {
-            const err = new Error(this.formatWeChatError(resp?.errcode ?? -1, resp?.errmsg || "封面上传失败"));
+            const err = new Error(this.formatWeChatError(resp?.errcode ?? -1, resp?.errmsg || "图片素材上传失败"));
             err.errcode = resp?.errcode;
             throw err;
         }
         return resp.media_id;
+    }
+
+    static async uploadPermanentCover(token, coverBuffer) {
+        return this.uploadPermanentImage(token, coverBuffer, "cover.png", "image/png");
     }
 
     static async uploadContentImage(token, imgBuffer, ext = "png") {
@@ -1490,6 +2357,119 @@ class WeChatOfficialApi {
             throw err;
         }
     }
+
+    /**
+     * 清洗 Markdown 为微信小绿书 (newspic) 纯文本内容，保留段落换行与 #话题标签，截断 <= 1000 字
+     */
+    static formatNewspicContent(markdown = "", title = "") {
+        let text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        text = text.replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/, "");
+        text = text.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, "");
+        text = text.replace(/<img\b[^>]*>\s*/gi, "");
+        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => (label && label.trim() ? `${label.trim()} (${url})` : url));
+        text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+        text = text.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
+        text = text.replace(/^#{1,6}[ \t]+/gm, "");
+        text = text.replace(/^>[ \t]?/gm, "");
+        text = text.replace(/^(?:---|\*\*\*|___)$/gm, "");
+        text = text.replace(/(\*\*|__|~~|`)/g, "");
+        text = text.replace(/\u200b/g, "");
+
+        const normTitle = String(title || "").replace(/\s+/g, " ").trim();
+        const lines = text.split("\n").map(l => l.trimEnd());
+        if (lines.length > 0 && normTitle && lines[0].trim().replace(/\s+/g, " ") === normTitle) {
+            lines.shift();
+        }
+        let cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+        if (!cleaned) cleaned = normTitle || "图文分享";
+        return this.sliceCodePoints(cleaned, 1000);
+    }
+
+    static isCommentPermissionError(resp) {
+        if (!resp || resp.errcode === undefined || resp.errcode === 0) return false;
+        const code = Number(resp.errcode);
+        const errmsg = String(resp.errmsg || "").toLowerCase();
+        const commentCodes = new Set([40097, 45008, 45065, 45083, 45157, 48001, 61450, 85079, 85080, 88000, 88001, 88002, 88003, 88004, 88005]);
+        return commentCodes.has(code) || /comment|only_fans|留言|评论|privilege/.test(errmsg);
+    }
+
+    /**
+     * 微信小绿书 (article_type: "newspic") 官方草稿箱直推
+     */
+    static async publishNewspicDraft({ appId, appSecret, title, author, contentText, images = [], onStep }) {
+        if (!Array.isArray(images) || images.length === 0) {
+            throw new Error("小绿书草稿至少需要 1 张图片素材");
+        }
+        const safeImages = images.slice(0, 20);
+        const safeTitle = this.sliceCodePoints(title, 32) || "图文动态";
+        const safeAuthor = this.sliceCodePoints(author || "", 8);
+        const safeContent = this.sliceCodePoints(contentText || safeTitle, 1000);
+
+        const imageMediaIds = new Array(safeImages.length).fill(null);
+
+        const runOnce = async (forceRefreshToken = false) => {
+            if (onStep) onStep("⏳ 鉴权中...");
+            const token = await this.getAccessToken(appId, appSecret, forceRefreshToken);
+
+            // 断点续传式上传永久素材：token 刷新后仅补传尚未拿到的 media_id，绝不重复上传
+            for (let i = 0; i < safeImages.length; i++) {
+                if (imageMediaIds[i]) continue;
+                const img = safeImages[i];
+                if (onStep) onStep(`⏳ 上传图 ${i + 1}/${safeImages.length}`);
+                imageMediaIds[i] = await this.uploadPermanentImage(
+                    token,
+                    img.buffer,
+                    img.filename || `newspic_${i + 1}.${img.ext || "png"}`,
+                    img.mimeType || "image/png"
+                );
+            }
+
+            const submitDraft = async (needOpenComment) => {
+                const article = {
+                    article_type: "newspic",
+                    title: safeTitle,
+                    author: safeAuthor,
+                    content: safeContent,
+                    image_info: {
+                        image_list: imageMediaIds.map(mid => ({ image_media_id: mid }))
+                    },
+                    need_open_comment: needOpenComment,
+                    only_fans_can_comment: 0
+                };
+                const payloadBuf = Buffer.from(JSON.stringify({ articles: [article] }), "utf8");
+                return this.requestRaw({
+                    method: "POST",
+                    apiPath: `/cgi-bin/draft/add?access_token=${encodeURIComponent(token)}`,
+                    headers: { "Content-Type": "application/json; charset=utf-8" },
+                    bodyBuffer: payloadBuf,
+                    timeoutMs: 35000
+                });
+            };
+
+            if (onStep) onStep("⏳ 写入小绿书...");
+            let draftResp = await submitDraft(1);
+            if ((!draftResp || !draftResp.media_id) && this.isCommentPermissionError(draftResp)) {
+                if (onStep) onStep("⏳ 降级重试...");
+                draftResp = await submitDraft(0);
+            }
+
+            if (!draftResp || !draftResp.media_id) {
+                const err = new Error(this.formatWeChatError(draftResp?.errcode ?? -1, draftResp?.errmsg || "写入小绿书草稿箱失败"));
+                err.errcode = draftResp?.errcode;
+                throw err;
+            }
+            return { mediaId: draftResp.media_id, imageCount: imageMediaIds.length };
+        };
+
+        try {
+            return await runOnce(false);
+        } catch (err) {
+            if (err && (err.errcode === 40001 || err.errcode === 42001)) {
+                return await runOnce(true);
+            }
+            throw err;
+        }
+    }
 }
 
 const DEFAULT_CONFIG = {
@@ -1497,6 +2477,7 @@ const DEFAULT_CONFIG = {
     capsule: FREE_DEFAULT_CAPSULE,
     tags: "技术, 生产力, 架构",
     port: 18999,
+    xhsMode: "safe_assist",
     licenseKey: "",
     licenseVerifiedEdition: "FREE",
     wechatMp: {
@@ -1529,7 +2510,7 @@ class MetrixPlugin extends siyuan.Plugin {
     }
 
     async onload() {
-        console.log("[Metrix] Starting Metrix Commercial Plugin v2.2.0...");
+        console.log("[Metrix] Starting Metrix Commercial Plugin v2.3.0...");
         await this.loadConfig();
 
         // 启动时复核授权签名状态
@@ -1641,6 +2622,9 @@ class MetrixPlugin extends siyuan.Plugin {
                 if (stored.dailyUsage) {
                     this.config.dailyUsage = Object.assign({}, DEFAULT_CONFIG.dailyUsage, stored.dailyUsage);
                 }
+                if (this.config.xhsMode !== "human_auto") {
+                    this.config.xhsMode = "safe_assist";
+                }
             }
         } catch (e) {
             console.warn("[Metrix] 读取配置失败，采用默认值:", e);
@@ -1729,7 +2713,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 <div class="metrix-settings-section">
                     <div class="metrix-section-title">🧩 30 秒安装「Metrix 浏览器发布伴侣」</div>
                     <div style="line-height: 1.7; color: var(--b3-theme-on-surface);">
-                        Metrix 采用<strong>零封号风险架构</strong>：不伪造无头爬虫，直接复用您日常 Chrome / Edge 浏览器已登录的账号会话写入草稿箱（涵盖知乎、掘金、CSDN、头条、B站、飞书及海外 X / Threads）。首次使用只需安装一次伴侣扩展：
+                        Metrix 采用<strong>零封号风险架构</strong>：不伪造无头爬虫，直接复用您日常 Chrome / Edge 浏览器已登录的账号会话写入草稿箱（涵盖小红书、知乎、掘金、CSDN、头条、B站、飞书及海外 X / Threads；公众号长图文与小绿书直连官方 API）。首次使用只需安装一次伴侣扩展：
                     </div>
                     <ol style="margin: 4px 0 8px 18px; padding: 0; line-height: 1.85; color: var(--b3-theme-on-surface);">
                         <li>点击下方按钮，将内置的 <code>metrix-companion.zip</code> 导出到您的电脑并<strong>解压为文件夹</strong>；</li>
@@ -1884,6 +2868,20 @@ class MetrixPlugin extends siyuan.Plugin {
                 </div>
 
                 <div class="metrix-settings-section">
+                    <div class="metrix-section-title">📕 小红书图文防封号分发策略</div>
+                    <div style="font-size:12px; line-height:1.6; color:var(--b3-theme-on-surface-light);">
+                        默认采用 0 自动注入的悬浮接力台；如需自动上传与话题点选变蓝，可切换为拟人慢速填充模式（绝不自动点发布）。
+                    </div>
+                    <div class="metrix-form-row">
+                        <label class="metrix-field-label">小红书分发模式</label>
+                        <select id="metrix-set-xhs-mode" class="metrix-select">
+                            <option value="safe_assist" ${cfg.xhsMode !== 'human_auto' ? 'selected' : ''}>🛡️ 零风控接力模式（默认推荐 · 0自动注入不封号）</option>
+                            <option value="human_auto" ${cfg.xhsMode === 'human_auto' ? 'selected' : ''}>⚡ 拟人慢速填充模式（随机停顿 + 话题自动变蓝）</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="metrix-settings-section">
                     <div class="metrix-section-title">🌐 本地通信与浏览器伴侣</div>
                     <div class="metrix-form-row">
                         <label class="metrix-field-label">Bridge 服务端口 (默认 18999)</label>
@@ -2012,12 +3010,14 @@ class MetrixPlugin extends siyuan.Plugin {
                     const githubToken = document.getElementById("metrix-set-gh-token")?.value?.trim() || "";
                     const wxAppId = document.getElementById("metrix-set-wx-appid")?.value?.trim() || "";
                     const wxAppSecret = document.getElementById("metrix-set-wx-secret")?.value?.trim() || "";
+                    const xhsMode = document.getElementById("metrix-set-xhs-mode")?.value === "human_auto" ? "human_auto" : "safe_assist";
 
                     await this.saveConfig({
                         author,
                         capsule,
                         tags,
                         port,
+                        xhsMode,
                         licenseKey: licVal,
                         licenseVerifiedEdition: verifiedEd,
                         wechatMp: {
@@ -2037,6 +3037,17 @@ class MetrixPlugin extends siyuan.Plugin {
                     if (wxStatusBg && wxAppId && wxAppSecret) {
                         wxStatusBg.innerHTML = "⚪ 待发布";
                     }
+                    const wxNewspicStatusBg = document.getElementById("status-wechat_newspic");
+                    if (wxNewspicStatusBg && wxAppId && wxAppSecret) {
+                        wxNewspicStatusBg.innerHTML = "⚪ 待发布";
+                    }
+                    const xhsRadio = document.querySelector(`input[name='metrix-xhs-mode'][value='${xhsMode}']`);
+                    if (xhsRadio) {
+                        xhsRadio.checked = true;
+                        document.querySelectorAll(".metrix-xhs-mode-opt").forEach(el => {
+                            el.classList.toggle("active", el.getAttribute("data-mode") === xhsMode);
+                        });
+                    }
 
                     siyuan.showMessage("✔ Metrix 偏好设置已成功保存！", 2500, "info");
                 };
@@ -2050,7 +3061,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 <div style="text-align:center;">
                     <h2 style="margin:0 0 6px 0; font-size:20px; color:var(--b3-theme-on-surface);">💎 升级 Metrix 矩阵分发专业版</h2>
                     <div style="font-size:13px; color:var(--b3-theme-on-surface-light);">
-                        一次买断 · 终身授权 · 公众号 API 直连 + 海内外 9 大平台一键并发齐发
+                        一次买断 · 终身授权 · 公众号/小绿书直连 + 小红书双模 + 海内外 11 大渠道一键齐发
                     </div>
                 </div>
 
@@ -2060,10 +3071,10 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div class="metrix-plan-price">¥0 <span style="font-size:12px; font-weight:normal; color:var(--b3-theme-on-surface-light);">永久免费</span></div>
                         <ul class="metrix-feature-list">
                             <li>✔ 单次发布 1 个平台（每日限 3 次）</li>
-                            <li>✔ 支持微信公众号直连 & 8 大海内外社区</li>
-                            <li>✔ 微信公众号极客蓝内联高亮排版</li>
+                            <li>✔ 支持公众号/小绿书直连 & 小红书/海内外社区</li>
+                            <li>✔ 微信公众号极客蓝排版 & 3:4 自动分卡</li>
                             <li>✔ 原生 Canvas 2.35:1 封面渲染</li>
-                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 全网 9 大平台不限次数一键齐发</li>
+                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 全网 11 大渠道不限次数一键齐发</li>
                             <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 专栏胶囊标语与云图床深度定制</li>
                         </ul>
                     </div>
@@ -2073,8 +3084,8 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div class="metrix-plan-title">💎 终身专业版 (Lifetime)</div>
                         <div class="metrix-plan-price gold">¥49 <span style="font-size:12px; font-weight:normal; color:var(--b3-theme-on-surface-light);">永久买断 / 团队版 ¥129</span></div>
                         <ul class="metrix-feature-list">
-                            <li>✔ <strong>全网 9 大平台（含 X / Threads）不限次数一键并发齐发</strong></li>
-                            <li>✔ <strong>微信公众号 AppID 直连 + 海内外社区免密同步</strong></li>
+                            <li>✔ <strong>全网 11 大渠道（含小绿书/小红书/X/Threads）无限齐发</strong></li>
+                            <li>✔ <strong>公众号长图文 & 小绿书 AppID 直推 + 海内外免密同步</strong></li>
                             <li>✔ <strong>专栏胶囊标语 & 品牌作者深度定制</strong></li>
                             <li>✔ <strong>PicGo / ImgBB / GitHub 图床极速直连</strong></li>
                             <li>✔ <strong>Ed25519 纯离线非对称验签，100% 隐私安全</strong></li>
@@ -2174,6 +3185,12 @@ class MetrixPlugin extends siyuan.Plugin {
             ? '⚪ 待发布'
             : '<span id="metrix-wx-quick-cfg" style="color:#0284c7; text-decoration:underline; cursor:pointer;" title="点击配置公众号 AppID 与 AppSecret">⚙️ 配置密钥</span>';
 
+        const newspicStatusInit = hasWechatCreds
+            ? '⚪ 待发布'
+            : '<span id="metrix-wx-newspic-quick-cfg" style="color:#0284c7; text-decoration:underline; cursor:pointer;" title="点击配置公众号 AppID 与 AppSecret">⚙️ 配置密钥</span>';
+
+        const curXhsMode = this.config.xhsMode === "human_auto" ? "human_auto" : "safe_assist";
+
         const dialogContent = `
             <div class="metrix-dialog">
                 <div class="metrix-header">
@@ -2215,8 +3232,13 @@ class MetrixPlugin extends siyuan.Plugin {
                     </div>
 
                     <div class="metrix-right">
-                        <div class="metrix-field-label">
-                            目标平台${!isPro ? ` <span id="metrix-label-upsell" style="font-weight:600; color:#d97706; cursor:pointer;" title="点击查看 Pro 终身版并发权益">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次 · <span style="text-decoration:underline;">解锁 9 平台齐发</span>)</span>` : '（公众号直连 + 海内外浏览器会话复用）'}
+                        <div class="metrix-field-label" style="display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
+                            <span>目标平台${!isPro ? ` <span id="metrix-label-upsell" style="font-weight:600; color:#d97706; cursor:pointer;" title="点击查看 Pro 终身版并发权益">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次 · <span style="text-decoration:underline;">解锁 11 渠道齐发</span>)</span>` : '（11 大海内外全能分发渠道）'}</span>
+                            ${isPro ? `<span class="metrix-preset-bar">
+                                <button type="button" class="metrix-preset-btn" id="metrix-preset-long">长文9端</button>
+                                <button type="button" class="metrix-preset-btn" id="metrix-preset-pic">图文双发</button>
+                                <button type="button" class="metrix-preset-btn" id="metrix-preset-all">全选11端</button>
+                            </span>` : ''}
                         </div>
                         <div class="metrix-platforms-grid">
                             <label class="metrix-platform-item ${checkWechatDefault ? 'active' : ''}" data-platform="wechat" style="grid-column: 1 / -1;">
@@ -2224,6 +3246,16 @@ class MetrixPlugin extends siyuan.Plugin {
                                 <span style="font-weight: 600;">🟢 微信公众号</span>
                                 <span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(22, 163, 74, 0.12); color: #16a34a; font-weight: 600;">AppID 草稿直连</span>
                                 <span class="metrix-platform-status" id="status-wechat">${wechatStatusInit}</span>
+                            </label>
+                            <label class="metrix-platform-item" data-platform="wechat_newspic" title="纯前端提取图文或自动生成 3:4 极客卡片，直推公众号小绿书草稿箱">
+                                <input type="checkbox" value="wechat_newspic" style="accent-color: #16a34a;" />
+                                <span style="font-weight: 600;">🟢 微信小绿书</span>
+                                <span class="metrix-platform-status" id="status-wechat_newspic">${newspicStatusInit}</span>
+                            </label>
+                            <label class="metrix-platform-item" data-platform="xiaohongshu" title="零风控接力悬浮台 / 拟人慢速话题变蓝双模">
+                                <input type="checkbox" value="xiaohongshu" style="accent-color: #ff2442;" />
+                                <span style="font-weight: 600;">📕 小红书图文</span>
+                                <span class="metrix-platform-status" id="status-xiaohongshu">⚪ 待发布</span>
                             </label>
                             <label class="metrix-platform-item ${checkZhihuDefault ? 'active' : ''}" data-platform="zhihu">
                                 <input type="checkbox" ${checkZhihuDefault ? 'checked' : ''} value="zhihu" style="accent-color: #0284c7;" />
@@ -2266,13 +3298,31 @@ class MetrixPlugin extends siyuan.Plugin {
                                 <span class="metrix-platform-status" id="status-threads">⚪ 待发布</span>
                             </label>
                         </div>
+
+                        <div id="metrix-xhs-mode-bar" class="metrix-xhs-mode-bar" style="display:none;">
+                            <div class="metrix-xhs-mode-title">
+                                <span>📕 小红书图文防封号模式</span>
+                                <span style="font-size:11px; color:#ff2442; font-weight:600;">绝不代点发布</span>
+                            </div>
+                            <div class="metrix-xhs-mode-options">
+                                <label class="metrix-xhs-mode-opt ${curXhsMode !== 'human_auto' ? 'active' : ''}" data-mode="safe_assist">
+                                    <input type="radio" name="metrix-xhs-mode" value="safe_assist" ${curXhsMode !== 'human_auto' ? 'checked' : ''} style="accent-color:#ff2442;" />
+                                    <span>🛡️ 零风控接力模式（默认推荐 · 0自动注入不封号）</span>
+                                </label>
+                                <label class="metrix-xhs-mode-opt ${curXhsMode === 'human_auto' ? 'active' : ''}" data-mode="human_auto">
+                                    <input type="radio" name="metrix-xhs-mode" value="human_auto" ${curXhsMode === 'human_auto' ? 'checked' : ''} style="accent-color:#ff2442;" />
+                                    <span>⚡ 拟人慢速填充模式（随机停顿 + 话题自动变蓝）</span>
+                                </label>
+                            </div>
+                        </div>
+
                         ${!isPro
                             ? `<div id="metrix-multi-pro-upsell" style="margin-top: auto; padding: 11px 12px; background: rgba(245, 158, 11, 0.08); border-radius: 8px; border: 1px solid rgba(245, 158, 11, 0.32); font-size: 12px; line-height: 1.55; color: var(--b3-theme-on-surface); display:flex; align-items:center; justify-content:space-between; gap:10px; transition: all 0.2s;">
-                                <div id="metrix-multi-pro-upsell-text">💡 <strong>单平台免费体验中</strong>：支持全平台逐个分发；升级 <strong>Pro 终身版 (¥49)</strong> 解锁 <strong>9 大平台（含海外 X / Threads）一键齐发</strong>与云图床。</div>
+                                <div id="metrix-multi-pro-upsell-text">💡 <strong>单平台免费体验中</strong>：支持全平台逐个分发；升级 <strong>Pro 终身版 (¥49)</strong> 解锁 <strong>11 大渠道（含小绿书/小红书/X/Threads）一键齐发</strong>。</div>
                                 <button id="metrix-inline-upsell-btn" class="metrix-top-btn metrix-top-btn-pro" style="white-space:nowrap; flex-shrink:0; padding:6px 11px;">💎 查看 Pro</button>
                                </div>`
-                            : `<div style="margin-top: auto; padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface);">
-                                💡 <strong>海内外 9 平台双引擎</strong>：<strong>微信公众号</strong>通过「⚙️ 设置」直推草稿箱；其余社区（含海外 <strong>X / Threads</strong>，仅填充不自动发送）调起「🧩 伴侣扩展」免密同步。
+                            : `<div style="margin-top: auto; padding: 10px 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 11.5px; line-height: 1.55; color: var(--b3-theme-on-surface);">
+                                💡 <strong>11 大海内外双引擎</strong>：<strong>公众号 / 小绿书</strong>纯 JS 直推官方草稿箱；<strong>小红书图文</strong>及海内外社区调起「🧩 伴侣扩展」安全写入。
                                </div>`
                         }
                     </div>
@@ -2288,8 +3338,8 @@ class MetrixPlugin extends siyuan.Plugin {
         new siyuan.Dialog({
             title: "",
             content: dialogContent,
-            width: "820px",
-            height: "640px"
+            width: "840px",
+            height: "680px"
         });
 
         const updateCoverLive = () => {
@@ -2338,6 +3388,14 @@ class MetrixPlugin extends siyuan.Plugin {
                     this.openSettingsDialog();
                 };
             }
+            const wxNewspicQuickCfg = document.getElementById("metrix-wx-newspic-quick-cfg");
+            if (wxNewspicQuickCfg) {
+                wxNewspicQuickCfg.onclick = (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    this.openSettingsDialog();
+                };
+            }
 
             const labelUpsell = document.getElementById("metrix-label-upsell");
             if (labelUpsell) {
@@ -2346,6 +3404,49 @@ class MetrixPlugin extends siyuan.Plugin {
             const inlineUpsellBtn = document.getElementById("metrix-inline-upsell-btn");
             if (inlineUpsellBtn) {
                 inlineUpsellBtn.onclick = () => this.openLicenseDialog();
+            }
+
+            const syncXhsModeBar = () => {
+                const xhsCb = document.querySelector(".metrix-platforms-grid input[value='xiaohongshu']");
+                const xhsBar = document.getElementById("metrix-xhs-mode-bar");
+                if (xhsBar) {
+                    xhsBar.style.display = xhsCb && xhsCb.checked ? "flex" : "none";
+                }
+            };
+            syncXhsModeBar();
+
+            document.querySelectorAll("input[name='metrix-xhs-mode']").forEach(radio => {
+                radio.onchange = () => {
+                    const mode = radio.value === "human_auto" ? "human_auto" : "safe_assist";
+                    document.querySelectorAll(".metrix-xhs-mode-opt").forEach(el => {
+                        el.classList.toggle("active", el.getAttribute("data-mode") === mode);
+                    });
+                    this.saveConfig({ xhsMode: mode });
+                };
+            });
+
+            const applyPresetSelection = (targetSet) => {
+                document.querySelectorAll(".metrix-platforms-grid .metrix-platform-item").forEach(labelEl => {
+                    const cb = labelEl.querySelector("input[type='checkbox']");
+                    if (!cb) return;
+                    const checked = targetSet.has(cb.value);
+                    cb.checked = checked;
+                    labelEl.classList.toggle("active", checked);
+                });
+                syncXhsModeBar();
+            };
+
+            const presetLong = document.getElementById("metrix-preset-long");
+            if (presetLong) {
+                presetLong.onclick = () => applyPresetSelection(new Set(["wechat", "zhihu", "juejin", "csdn", "toutiao", "bilibili", "feishu", "x", "threads"]));
+            }
+            const presetPic = document.getElementById("metrix-preset-pic");
+            if (presetPic) {
+                presetPic.onclick = () => applyPresetSelection(new Set(["wechat_newspic", "xiaohongshu"]));
+            }
+            const presetAll = document.getElementById("metrix-preset-all");
+            if (presetAll) {
+                presetAll.onclick = () => applyPresetSelection(new Set(["wechat", "wechat_newspic", "xiaohongshu", "zhihu", "juejin", "csdn", "toutiao", "bilibili", "feishu", "x", "threads"]));
             }
 
             document.querySelectorAll(".metrix-platforms-grid .metrix-platform-item").forEach(labelEl => {
@@ -2372,12 +3473,13 @@ class MetrixPlugin extends siyuan.Plugin {
                                 if (upsellBox && upsellText) {
                                     upsellBox.style.background = "rgba(245, 158, 11, 0.16)";
                                     upsellBox.style.borderColor = "#f59e0b";
-                                    upsellText.innerHTML = `⚡ <strong>已切换为「${this.escapeHtml(platformName)}」</strong>：同时勾选多平台并发齐发需解锁 <strong>Pro 终身版 (¥49)</strong>，1 秒同时写入 9 平台草稿箱。`;
+                                    upsellText.innerHTML = `⚡ <strong>已切换为「${this.escapeHtml(platformName)}」</strong>：同时勾选多平台并发齐发需解锁 <strong>Pro 终身版 (¥49)</strong>，1 秒同时写入 11 大渠道草稿箱。`;
                                     if (upsellBtn) upsellBtn.textContent = "💎 立即解锁齐发";
                                 }
                             }
                         }
                         labelEl.classList.toggle("active", cb.checked);
+                        syncXhsModeBar();
                     };
                 }
             });
@@ -2445,7 +3547,7 @@ class MetrixPlugin extends siyuan.Plugin {
 
         // 1. 免费版每日使用次数拦截（每日限 3 次）
         if (!isPro && this.getRemainingFreeRuns() <= 0) {
-            const upgradeNow = confirm(`💡【Metrix 今日免费额度已用完】\n\n免费社区版每日支持发布 ${FREE_DAILY_LIMIT} 次（明日 00:00 自动恢复）。\n\n点击【确定】立即升级终身专业版（¥49 一次买断，永久解锁不限次数 + 海内外 9 大平台一键齐发）！`);
+            const upgradeNow = confirm(`💡【Metrix 今日免费额度已用完】\n\n免费社区版每日支持发布 ${FREE_DAILY_LIMIT} 次（明日 00:00 自动恢复）。\n\n点击【确定】立即升级终身专业版（¥49 一次买断，永久解锁不限次数 + 海内外 11 大渠道一键齐发）！`);
             if (upgradeNow) {
                 this.openLicenseDialog();
             }
@@ -2455,7 +3557,7 @@ class MetrixPlugin extends siyuan.Plugin {
         // 2. 免费版单次发布平台数拦截（每次限 1 个平台）
         let targetPlatforms = checkedPlatforms;
         if (!isPro && targetPlatforms.length > FREE_MAX_PLATFORMS) {
-            const shouldUpgrade = confirm(`💡【Metrix 免费版限制提示】\n\n免费版每次仅支持发布 ${FREE_MAX_PLATFORMS} 个平台（当前已选 ${targetPlatforms.length} 个，每日限 ${FREE_DAILY_LIMIT} 次）。\n\n点击【确定】立即升级/激活终身专业版（¥49 一次买断，解锁海内外 9 大平台并发齐发），点击【取消】仅发布首个选中平台。`);
+            const shouldUpgrade = confirm(`💡【Metrix 免费版限制提示】\n\n免费版每次仅支持发布 ${FREE_MAX_PLATFORMS} 个平台（当前已选 ${targetPlatforms.length} 个，每日限 ${FREE_DAILY_LIMIT} 次）。\n\n点击【确定】立即升级/激活终身专业版（¥49 一次买断，解锁海内外 11 大渠道并发齐发），点击【取消】仅发布首个选中平台。`);
             if (shouldUpgrade) {
                 this.openLicenseDialog();
                 return;
@@ -2464,28 +3566,73 @@ class MetrixPlugin extends siyuan.Plugin {
             }
         }
 
-        // 3. 校验微信公众号 AppID & AppSecret 配置（未配置时不扣减免费额度）
+        // 3. 校验微信公众号 AppID & AppSecret 配置（公众号长图文 & 微信小绿书共用凭证）
         const wantsWechat = targetPlatforms.includes("wechat");
+        const wantsNewspic = targetPlatforms.includes("wechat_newspic");
+        const wantsXhs = targetPlatforms.includes("xiaohongshu");
         const wxAppId = (this.config.wechatMp?.appId || "").trim();
         const wxAppSecret = (this.config.wechatMp?.appSecret || "").trim();
-        const canDispatchWechat = wantsWechat && Boolean(wxAppId && wxAppSecret);
+        const hasWxCreds = Boolean(wxAppId && wxAppSecret);
+        const canDispatchWechat = wantsWechat && hasWxCreds;
+        const canDispatchNewspic = wantsNewspic && hasWxCreds;
 
-        if (wantsWechat && (!wxAppId || !wxAppSecret)) {
-            const wxStatusEl = document.getElementById("status-wechat");
-            if (wxStatusEl) {
-                wxStatusEl.innerHTML = `<span style="color:#d97706;">⚙️ 未配密钥</span>`;
+        if ((wantsWechat || wantsNewspic) && !hasWxCreds) {
+            if (wantsWechat) {
+                const wxStatusEl = document.getElementById("status-wechat");
+                if (wxStatusEl) wxStatusEl.innerHTML = `<span style="color:#d97706;">⚙️ 未配密钥</span>`;
+            }
+            if (wantsNewspic) {
+                const npStatusEl = document.getElementById("status-wechat_newspic");
+                if (npStatusEl) npStatusEl.innerHTML = `<span style="color:#d97706;">⚙️ 未配密钥</span>`;
             }
             siyuan.showMessage("⚙️ 请先在「偏好设置」中填写微信公众号 AppID 与 AppSecret", 3500, "error");
             this.openSettingsDialog();
-            if (targetPlatforms.length === 1) {
-                return;
+        }
+
+        const companionPlatforms = targetPlatforms.filter(p => p !== "wechat" && p !== "wechat_newspic");
+        if (!canDispatchWechat && !canDispatchNewspic && companionPlatforms.length === 0) {
+            return;
+        }
+
+        // 4. 若勾选了微信小绿书或小红书图文，提前提取顺序图片（无图时纯前端 Canvas 自动生成 1080×1440 3:4 极客卡片组）
+        let editorialImages = [];
+        if (canDispatchNewspic || wantsXhs) {
+            const maxNeeded = canDispatchNewspic ? 20 : 9;
+            const rawOrdered = (docData.orderedImages && docData.orderedImages.length > 0)
+                ? docData.orderedImages
+                : DocParser.extractOrderedImages(docData.markdown, docData.docId, maxNeeded);
+
+            for (const imgItem of rawOrdered.slice(0, maxNeeded)) {
+                try {
+                    const resolved = await ThemeEngine.resolveImagePayload(imgItem, docData.dataDir);
+                    if (resolved && resolved.buffer && resolved.buffer.length > 0) {
+                        editorialImages.push(resolved);
+                    }
+                } catch (e) {
+                    console.warn("[Metrix] 图文图片读取跳过:", imgItem?.src, e);
+                }
+            }
+
+            if (editorialImages.length === 0) {
+                const curCapsule = isPro
+                    ? (document.getElementById("metrix-input-capsule")?.value?.trim() || this.config.capsule || FREE_DEFAULT_CAPSULE)
+                    : FREE_DEFAULT_CAPSULE;
+                const curAuthor = isPro ? (this.config.author || DEFAULT_CONFIG.author) : DEFAULT_CONFIG.author;
+                siyuan.showMessage("🎨 当前笔记无配图，正在自动生成 3:4 高清图文卡片...", 2000, "info");
+                editorialImages = await CoverRenderer.renderNewspicCards({
+                    title: finalTitle,
+                    markdown: docData.markdown,
+                    author: curAuthor,
+                    capsule: curCapsule,
+                    theme: "light",
+                    maxCards: 4
+                });
             }
         }
 
-        const companionPlatforms = targetPlatforms.filter(p => p !== "wechat");
         let shouldConsumeFreeQuota = false;
 
-        // 4. 分支 A：调起浏览器伴侣分发其余社区平台
+        // 5. 分支 A：调起浏览器伴侣分发其余社区平台（含小红书图文）
         if (companionPlatforms.length > 0) {
             let finalMarkdown = docData.markdown;
             const bedType = isPro ? (this.config.imageBed?.type || "none") : "none";
@@ -2538,6 +3685,25 @@ class MetrixPlugin extends siyuan.Plugin {
 
             const tagList = (this.config.tags || "技术, 生产力, 架构").split(/[,，\s]+/).filter(Boolean);
 
+            let xhsPayload = null;
+            if (wantsXhs) {
+                const xhsParsed = DocParser.parseXiaohongshuContent(docData.markdown, finalTitle, this.config.tags);
+                const selectedMode = document.querySelector("input[name='metrix-xhs-mode']:checked")?.value
+                    || this.config.xhsMode
+                    || "safe_assist";
+                const xhsMode = selectedMode === "human_auto" ? "human_auto" : "safe_assist";
+                if (xhsMode !== this.config.xhsMode) {
+                    await this.saveConfig({ xhsMode });
+                }
+                xhsPayload = {
+                    mode: xhsMode,
+                    title: xhsParsed.title,
+                    bodyWithoutTags: xhsParsed.bodyWithoutTags,
+                    hashtags: xhsParsed.hashtags,
+                    imagesDataUrls: editorialImages.slice(0, 9).map(img => img.dataUrl).filter(Boolean)
+                };
+            }
+
             const taskData = {
                 id: taskId,
                 article: {
@@ -2548,7 +3714,8 @@ class MetrixPlugin extends siyuan.Plugin {
                     tags: tagList,
                     coverAssetId: "cover",
                     coverBase64,
-                    assets: assetsList
+                    assets: assetsList,
+                    xhs: xhsPayload
                 },
                 platforms: companionPlatforms,
                 createdAt: Date.now()
@@ -2564,44 +3731,78 @@ class MetrixPlugin extends siyuan.Plugin {
             const handshakeUrl = `http://127.0.0.1:${this.bridgeServer.port}/matrix-bridge?taskId=${taskId}#token=${taskToken}`;
             window.open(handshakeUrl);
             shouldConsumeFreeQuota = true;
-            if (!canDispatchWechat) {
+            if (!canDispatchWechat && !canDispatchNewspic) {
                 siyuan.showMessage("🚀 已唤起浏览器伴侣，草稿正在自动写入...", 4000, "info");
             }
         }
 
-        // 5. 分支 B：微信公众号 AppID & AppSecret 官方草稿箱直推
-        if (canDispatchWechat) {
-            const wxStatusEl = document.getElementById("status-wechat");
+        // 6. 分支 B：微信公众号长图文 & 微信小绿书官方草稿箱直推
+        if (canDispatchWechat || canDispatchNewspic) {
             const dispatchBtn = document.getElementById("metrix-btn-dispatch");
             if (dispatchBtn) dispatchBtn.disabled = true;
             try {
-                await WeChatOfficialApi.publishDraft({
-                    appId: wxAppId,
-                    appSecret: wxAppSecret,
-                    title: finalTitle,
-                    author: isPro ? (this.config.author || "") : "",
-                    digest: finalDigest,
-                    contentHtml: inlineHtml,
-                    coverBuffer,
-                    onStep: (stepText) => {
-                        if (wxStatusEl) wxStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
+                if (canDispatchWechat) {
+                    const wxStatusEl = document.getElementById("status-wechat");
+                    try {
+                        await WeChatOfficialApi.publishDraft({
+                            appId: wxAppId,
+                            appSecret: wxAppSecret,
+                            title: finalTitle,
+                            author: isPro ? (this.config.author || "") : "",
+                            digest: finalDigest,
+                            contentHtml: inlineHtml,
+                            coverBuffer,
+                            onStep: (stepText) => {
+                                if (wxStatusEl) wxStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
+                            }
+                        });
+                        if (wxStatusEl) {
+                            wxStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿箱</a>`;
+                        }
+                        shouldConsumeFreeQuota = true;
+                    } catch (err) {
+                        const errMsg = err?.message || String(err);
+                        if (wxStatusEl) {
+                            wxStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
+                        }
+                        siyuan.showMessage("❌ 公众号推送失败：" + errMsg, 5500, "error");
                     }
-                });
-                if (wxStatusEl) {
-                    wxStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿箱</a>`;
                 }
-                shouldConsumeFreeQuota = true;
-                if (companionPlatforms.length > 0) {
-                    siyuan.showMessage("🎉 微信公众号已直推草稿箱，其余社区正在后台同步！", 4500, "info");
-                } else {
-                    siyuan.showMessage("🎉 微信公众号草稿推送成功！可前往公众平台后台预览群发", 4500, "info");
+
+                if (canDispatchNewspic) {
+                    const npStatusEl = document.getElementById("status-wechat_newspic");
+                    try {
+                        const newspicContent = WeChatOfficialApi.formatNewspicContent(docData.markdown, finalTitle);
+                        const npRes = await WeChatOfficialApi.publishNewspicDraft({
+                            appId: wxAppId,
+                            appSecret: wxAppSecret,
+                            title: finalTitle,
+                            author: isPro ? (this.config.author || "") : "",
+                            contentText: newspicContent,
+                            images: editorialImages.slice(0, 20),
+                            onStep: (stepText) => {
+                                if (npStatusEl) npStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
+                            }
+                        });
+                        if (npStatusEl) {
+                            npStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿(${npRes.imageCount}图)</a>`;
+                        }
+                        shouldConsumeFreeQuota = true;
+                        siyuan.showMessage(`🎉 微信小绿书已直推草稿箱（${npRes.imageCount} 张图）！`, 4500, "info");
+                    } catch (err) {
+                        const errMsg = err?.message || String(err);
+                        if (npStatusEl) {
+                            npStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
+                        }
+                        siyuan.showMessage("❌ 微信小绿书推送失败：" + errMsg, 5500, "error");
+                    }
+                } else if (canDispatchWechat) {
+                    if (companionPlatforms.length > 0) {
+                        siyuan.showMessage("🎉 微信公众号已直推草稿箱，其余社区正在后台同步！", 4500, "info");
+                    } else {
+                        siyuan.showMessage("🎉 微信公众号草稿推送成功！可前往公众平台后台预览群发", 4500, "info");
+                    }
                 }
-            } catch (err) {
-                const errMsg = err?.message || String(err);
-                if (wxStatusEl) {
-                    wxStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
-                }
-                siyuan.showMessage("❌ 公众号推送失败：" + errMsg, 5500, "error");
             } finally {
                 if (dispatchBtn) dispatchBtn.disabled = false;
             }

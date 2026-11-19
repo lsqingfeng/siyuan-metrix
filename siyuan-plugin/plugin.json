@@ -2,7 +2,7 @@
   "name": "siyuan-metrix",
   "author": "lsqingfeng",
   "url": "https://github.com/lsqingfeng/siyuan-metrix",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "minAppVersion": "3.0.0",
   "backends": [
     "windows",
@@ -21,8 +21,8 @@
     "zh_CN": "Metrix 自媒体矩阵一键分发"
   },
   "description": {
-    "default": "Zero-Python multi-platform publisher for SiYuan Note. Direct WeChat Official Account draft API push (AppID/AppSecret) + browser session dispatch to Zhihu, Juejin, CSDN, Toutiao, Bilibili, Feishu, X (Twitter) & Threads.",
-    "zh_CN": "思源笔记多平台矩阵一键分发套件。支持微信公众号官方草稿箱 API 直连推送 (AppID/AppSecret)，并安全复用浏览器登录态一键打入知乎、稀土掘金、CSDN、今日头条、B站专栏、飞书文档及海外 X (Twitter) / Threads 草稿箱。"
+    "default": "Zero-Python 11-channel publisher for SiYuan Note. Direct WeChat Official Account & Newspic API push (AppID/AppSecret, auto 3:4 Canvas cards), dual-mode Xiaohongshu graphic relay/human-paced #topic linking, plus Zhihu, Juejin, CSDN, Toutiao, Bilibili, Feishu, X & Threads.",
+    "zh_CN": "思源笔记零 Python 11 大海内外渠道一键分发套件。支持微信公众号长图文与小绿书官方草稿箱直连（无图自动 Canvas 3:4 分卡），小红书防封号双模图文（零风控接力台 / 拟人慢速自动变蓝话题），以及知乎、掘金、CSDN、头条、B站、飞书、X 与 Threads。"
   },
   "readme": {
     "default": "README.md",
@@ -48,6 +48,9 @@
     "toutiao",
     "bilibili",
     "wechat",
+    "wechat_newspic",
+    "newspic",
+    "xiaohongshu",
     "twitter",
     "x",
     "threads",
