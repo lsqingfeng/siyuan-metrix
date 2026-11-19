@@ -276,94 +276,261 @@ class MatrixBridgeServer {
 }
 
 /**
- * 2. CoverRenderer: 纯前端 HTML5 Canvas 极客封面图渲染器
+ * 2. CoverRenderer: 纯前端 HTML5 Canvas 多风格视觉封面与 3:4 图文卡片渲染器
  */
 class CoverRenderer {
-    static async renderWechatCover(title, subtitle = "【深度技术剖析 · 生产实战】", tags = "架构师实战 · 生产环境落地指南") {
+    static CARD_THEMES = {
+        swiss_white: {
+            id: "swiss_white",
+            label: "☀️ 瑞士杂志白",
+            outerBg: "#F8F9FC",
+            cardBg: "#FFFFFF",
+            cardBorder: "#E2E8F0",
+            title: "#0F172A",
+            titleHighlight: "#0047AB",
+            heading: "#0F172A",
+            body: "#334155",
+            muted: "#64748B",
+            accent: "#0047AB",
+            accentSecondary: "#FF5A36",
+            accentSoft: "rgba(0, 71, 171, 0.08)",
+            pillBg: "rgba(0, 71, 171, 0.09)",
+            pillText: "#0047AB",
+            pillBorder: "rgba(0, 71, 171, 0.25)",
+            quoteBg: "#FFF5F2",
+            divider: "#E2E8F0",
+            gridColor: "rgba(15, 23, 42, 0.045)",
+            shadowColor: "rgba(15, 23, 42, 0.07)"
+        },
+        apple_bento: {
+            id: "apple_bento",
+            label: "🍱 苹果浅灰 Bento",
+            outerBg: "#F5F5F7",
+            cardBg: "#FFFFFF",
+            cardBorder: "rgba(0, 0, 0, 0.06)",
+            title: "#1D1D1F",
+            titleHighlight: "#4F46E5",
+            heading: "#1D1D1F",
+            body: "#424245",
+            muted: "#86868B",
+            accent: "#4F46E5",
+            accentSecondary: "#0EA5E9",
+            accentSoft: "rgba(79, 70, 229, 0.10)",
+            pillBg: "gradient",
+            pillText: "#FFFFFF",
+            pillBorder: "transparent",
+            quoteBg: "#F3F5FF",
+            divider: "#EAEAEF",
+            gridColor: "rgba(79, 70, 229, 0.05)",
+            shadowColor: "rgba(15, 23, 42, 0.08)"
+        },
+        warm_cream: {
+            id: "warm_cream",
+            label: "🍑 暖杏奶油纸",
+            outerBg: "#FDFBF7",
+            cardBg: "#FFFEFA",
+            cardBorder: "#EDE1CF",
+            title: "#2D2016",
+            titleHighlight: "#C25E28",
+            heading: "#3B281B",
+            body: "#4A3728",
+            muted: "#8C7462",
+            accent: "#D97736",
+            accentSecondary: "#E07A5F",
+            accentSoft: "rgba(217, 119, 54, 0.11)",
+            pillBg: "rgba(217, 119, 54, 0.12)",
+            pillText: "#B4531A",
+            pillBorder: "rgba(217, 119, 54, 0.28)",
+            quoteBg: "#FAF2E4",
+            divider: "#EFE4D4",
+            gridColor: "rgba(180, 83, 26, 0.04)",
+            shadowColor: "rgba(92, 60, 30, 0.07)"
+        },
+        mint_forest: {
+            id: "mint_forest",
+            label: "🌿 薄荷森系绿",
+            outerBg: "#F3F8F5",
+            cardBg: "#FFFFFF",
+            cardBorder: "#D4E8DC",
+            title: "#143D2B",
+            titleHighlight: "#059669",
+            heading: "#143D2B",
+            body: "#2D4F40",
+            muted: "#5F8070",
+            accent: "#059669",
+            accentSecondary: "#10B981",
+            accentSoft: "rgba(16, 185, 129, 0.12)",
+            pillBg: "rgba(16, 185, 129, 0.13)",
+            pillText: "#047857",
+            pillBorder: "rgba(5, 150, 105, 0.26)",
+            quoteBg: "#ECFDF5",
+            divider: "#D7EAE0",
+            gridColor: "rgba(5, 150, 105, 0.05)",
+            shadowColor: "rgba(20, 61, 43, 0.07)"
+        }
+    };
+
+    static getThemePalette(themeId = "swiss_white") {
+        if (themeId === "light" || !themeId || !this.CARD_THEMES[themeId]) {
+            return this.CARD_THEMES.swiss_white;
+        }
+        return this.CARD_THEMES[themeId];
+    }
+
+    static drawBadgePill(ctx, palette, text, x, y, h = 34, font = "bold 15px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif", maxW = 760) {
+        ctx.font = font;
+        const textW = Math.min(maxW - 28, ctx.measureText(text).width);
+        const w = textW + 28;
+        ctx.save();
+        if (palette.pillBg === "gradient") {
+            const g = ctx.createLinearGradient(x, y, x + w, y);
+            g.addColorStop(0, palette.accent);
+            g.addColorStop(1, palette.accentSecondary);
+            ctx.fillStyle = g;
+        } else {
+            ctx.fillStyle = palette.pillBg;
+        }
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, h >= 40 ? 12 : 9);
+        ctx.fill();
+        if (palette.pillBorder && palette.pillBorder !== "transparent") {
+            ctx.strokeStyle = palette.pillBorder;
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+        }
+        ctx.fillStyle = palette.pillText;
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, x + 14, y + h / 2, w - 28);
+        ctx.restore();
+        return w;
+    }
+
+    static async renderWechatCover(title, subtitle = "【深度技术剖析 · 生产实战】", tags = "架构师实战 · 生产环境落地指南", themeId = "swiss_white") {
         const width = 900;
         const height = 383;
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas 2D 上下文初始化失败");
 
-        const bgGrad = ctx.createLinearGradient(0, 0, width, height);
-        bgGrad.addColorStop(0, "#0b1120");
-        bgGrad.addColorStop(1, "#0f172a");
-        ctx.fillStyle = bgGrad;
+        const palette = this.getThemePalette(themeId);
+        const fontBase = "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif";
+
+        // 清爽浅色外底
+        ctx.fillStyle = palette.outerBg;
         ctx.fillRect(0, 0, width, height);
 
-        ctx.strokeStyle = "rgba(30, 41, 59, 0.6)";
-        ctx.lineWidth = 1;
-        for (let x = 0; x < width; x += 45) {
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, height);
-            ctx.stroke();
+        if (palette.id === "swiss_white") {
+            ctx.strokeStyle = palette.gridColor;
+            ctx.lineWidth = 1;
+            for (let x = 0; x < width; x += 45) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < height; y += 45) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(width, y);
+                ctx.stroke();
+            }
+        } else {
+            const glowGrad = ctx.createRadialGradient(width - 140, 60, 0, width - 140, 60, 290);
+            glowGrad.addColorStop(0, palette.accentSoft);
+            glowGrad.addColorStop(1, "rgba(255, 255, 255, 0)");
+            ctx.fillStyle = glowGrad;
+            ctx.fillRect(0, 0, width, height);
         }
-        for (let y = 0; y < height; y += 45) {
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(width, y);
-            ctx.stroke();
-        }
 
-        const glowGrad = ctx.createRadialGradient(width - 180, 70, 0, width - 180, 70, 240);
-        glowGrad.addColorStop(0, "rgba(37, 99, 235, 0.35)");
-        glowGrad.addColorStop(0.5, "rgba(56, 189, 248, 0.15)");
-        glowGrad.addColorStop(1, "rgba(11, 17, 32, 0)");
-        ctx.fillStyle = glowGrad;
-        ctx.fillRect(0, 0, width, height);
-
-        ctx.font = "bold 15px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
-        const badgeMetrics = ctx.measureText(subtitle);
-        const badgeW = badgeMetrics.width + 28;
-        const badgeH = 34;
-        const badgeX = 55;
-        const badgeY = 48;
-
-        ctx.fillStyle = "rgba(30, 41, 59, 0.85)";
+        // 内层高质感浅色主卡
+        ctx.save();
+        ctx.shadowColor = palette.shadowColor;
+        ctx.shadowBlur = 24;
+        ctx.shadowOffsetY = 8;
+        ctx.fillStyle = palette.cardBg;
         ctx.beginPath();
-        ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 8);
+        ctx.roundRect(24, 22, width - 48, height - 44, palette.id === "apple_bento" ? 22 : 16);
         ctx.fill();
+        ctx.restore();
 
-        ctx.strokeStyle = "#3b82f6";
-        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = palette.cardBorder;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(24, 22, width - 48, height - 44, palette.id === "apple_bento" ? 22 : 16);
         ctx.stroke();
 
-        ctx.fillStyle = "#60a5fa";
-        ctx.textBaseline = "middle";
-        ctx.fillText(subtitle, badgeX + 14, badgeY + badgeH / 2);
+        // 顶部主题装饰条（瑞士双色杂志线 / Bento 或森系渐变条）
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(24, 22, width - 48, height - 44, palette.id === "apple_bento" ? 22 : 16);
+        ctx.clip();
+        if (palette.id === "swiss_white") {
+            ctx.fillStyle = palette.accent;
+            ctx.fillRect(24, 22, (width - 48) * 0.72, 7);
+            ctx.fillStyle = palette.accentSecondary;
+            ctx.fillRect(24 + (width - 48) * 0.72, 22, (width - 48) * 0.28, 7);
+        } else {
+            const barGrad = ctx.createLinearGradient(24, 22, width - 24, 22);
+            barGrad.addColorStop(0, palette.accent);
+            barGrad.addColorStop(1, palette.accentSecondary);
+            ctx.fillStyle = barGrad;
+            ctx.fillRect(24, 22, width - 48, 7);
+        }
+        ctx.restore();
 
-        const cleanTitle = title.replace(/^[#\s]+/, "").trim();
+        // 胶囊标签 + 杂志页眉
+        this.drawBadgePill(ctx, palette, subtitle, 56, 52, 34, `bold 14.5px ${fontBase}`, 660);
+        if (palette.id === "swiss_white") {
+            ctx.font = `700 12px ${fontBase}`;
+            ctx.fillStyle = palette.muted;
+            ctx.textBaseline = "middle";
+            ctx.textAlign = "right";
+            ctx.fillText("METRIX EDITORIAL", width - 56, 69);
+            ctx.textAlign = "left";
+        }
+
+        const cleanTitle = (title || "").replace(/^[#\s]+/, "").trim() || "思源精选手记";
         let fontSize = 34;
-        ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif`;
+        ctx.font = `800 ${fontSize}px ${fontBase}`;
 
-        let { line1, line2 } = this.splitTitleSmart(cleanTitle, (str) => ctx.measureText(str).width, 770);
-
-        // 如果第二行依然超出最大宽度，动态缩窄字号
-        if (line2 && ctx.measureText(line2).width > 770) {
+        let { line1, line2 } = this.splitTitleSmart(cleanTitle, (str) => ctx.measureText(str).width, 760);
+        if (line2 && ctx.measureText(line2).width > 760) {
             fontSize = 30;
-            ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif`;
-            const re = this.splitTitleSmart(cleanTitle, (str) => ctx.measureText(str).width, 770);
+            ctx.font = `800 ${fontSize}px ${fontBase}`;
+            const re = this.splitTitleSmart(cleanTitle, (str) => ctx.measureText(str).width, 760);
             line1 = re.line1;
             line2 = re.line2;
         }
 
         ctx.textBaseline = "top";
-        ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif`;
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(line1, 55, 120);
+        ctx.font = `800 ${fontSize}px ${fontBase}`;
+        ctx.fillStyle = palette.title;
+        ctx.fillText(line1, 56, 118);
 
         if (line2) {
-            ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif`;
-            ctx.fillStyle = "#38bdf8";
-            ctx.fillText(line2, 55, 120 + fontSize + 20);
+            ctx.font = `800 ${fontSize}px ${fontBase}`;
+            ctx.fillStyle = palette.titleHighlight;
+            ctx.fillText(line2, 56, 118 + fontSize + 18);
         }
 
-        ctx.font = "16px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
-        ctx.fillStyle = "#94a3b8";
-        ctx.fillText(tags, 55, 290);
+        // 底部分割细线与主题标签
+        ctx.strokeStyle = palette.divider;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(56, 274);
+        ctx.lineTo(width - 56, 274);
+        ctx.stroke();
+
+        ctx.fillStyle = palette.accentSecondary;
+        ctx.beginPath();
+        ctx.roundRect(56, 294, 18, 6, 3);
+        ctx.fill();
+
+        ctx.font = `500 15px ${fontBase}`;
+        ctx.fillStyle = palette.muted;
+        ctx.fillText(tags, 84, 288);
 
         return canvas;
     }
@@ -494,11 +661,9 @@ class CoverRenderer {
      * 将 Markdown 清洗并结构化为卡片排版块，保留标题/列表/引用视觉层级
      */
     static buildNewspicCardBlocks(markdown, title = "") {
-        let text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        text = text.replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/, "");
-        text = text.replace(/!\[[^\]]*\]\([^)]+\)/g, "");
-        text = text.replace(/<img\b[^>]*>/gi, "");
-        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => (label && label.trim() ? label.trim() : url));
+        let text = typeof DocParser !== "undefined" && typeof DocParser.extractCleanEditorialBody === "function"
+            ? DocParser.extractCleanEditorialBody(markdown, title, { preserveMarkdown: true, keepLinkUrls: false })
+            : String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         text = text.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
         text = text.replace(/(\*\*|__|~~|`)/g, "");
 
@@ -546,41 +711,12 @@ class CoverRenderer {
     }
 
     /**
-     * 无图自动兜底：纯前端 Canvas 生成 1080×1440 (3:4) 高颜值极客卡片组（自动折行分页 1~4 张）
+     * 无图自动兜底：纯前端 Canvas 生成 1080×1440 (3:4) 清爽现代浅色排版卡片组（4套主题可选，自动折行分页 1~4 张）
      */
-    static async renderNewspicCards({ title = "", markdown = "", author = "", capsule = "", theme = "light", maxCards = 4 } = {}) {
+    static async renderNewspicCards({ title = "", markdown = "", author = "", capsule = "", theme = "swiss_white", maxCards = 4 } = {}) {
         const width = 1080;
         const height = 1440;
-        const isDark = theme === "dark";
-        const palette = isDark
-            ? {
-                outerBg: "#070b14",
-                dot: "rgba(148, 163, 184, 0.14)",
-                cardBg: "#0f172a",
-                cardBorder: "#1e293b",
-                title: "#f8fafc",
-                heading: "#38bdf8",
-                body: "#cbd5e1",
-                muted: "#94a3b8",
-                accent: "#38bdf8",
-                accentSoft: "rgba(56, 189, 248, 0.14)",
-                quoteBg: "rgba(30, 41, 59, 0.85)",
-                divider: "#1e293b"
-            }
-            : {
-                outerBg: "#f1f5f9",
-                dot: "rgba(100, 116, 139, 0.16)",
-                cardBg: "#ffffff",
-                cardBorder: "#e2e8f0",
-                title: "#0f172a",
-                heading: "#0f172a",
-                body: "#334155",
-                muted: "#64748b",
-                accent: "#0284c7",
-                accentSoft: "rgba(2, 132, 199, 0.09)",
-                quoteBg: "#f0f9ff",
-                divider: "#e2e8f0"
-            };
+        const palette = this.getThemePalette(theme);
 
         const cleanTitle = String(title || "").replace(/^[#\s]+/, "").trim() || "思源精选笔记";
         const cleanCapsule = String(capsule || "").trim() || "【极客手记 · 图文精选】";
@@ -696,59 +832,84 @@ class CoverRenderer {
                 throw new Error(`Canvas 2D 绘制上下文初始化失败 (第 ${p + 1} 张)`);
             }
 
-            // 外层背景与精致点阵
+            // 外层背景与主题肌理
             ctx.fillStyle = palette.outerBg;
             ctx.fillRect(0, 0, width, height);
-            ctx.fillStyle = palette.dot;
-            for (let gx = 24; gx < width; gx += 36) {
-                for (let gy = 24; gy < height; gy += 36) {
+            if (palette.id === "swiss_white") {
+                ctx.strokeStyle = palette.gridColor;
+                ctx.lineWidth = 1;
+                for (let gx = 0; gx < width; gx += 48) {
                     ctx.beginPath();
-                    ctx.arc(gx, gy, 1.5, 0, Math.PI * 2);
-                    ctx.fill();
+                    ctx.moveTo(gx, 0);
+                    ctx.lineTo(gx, height);
+                    ctx.stroke();
+                }
+                for (let gy = 0; gy < height; gy += 48) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, gy);
+                    ctx.lineTo(width, gy);
+                    ctx.stroke();
+                }
+            } else {
+                ctx.fillStyle = palette.gridColor;
+                for (let gx = 28; gx < width; gx += 38) {
+                    for (let gy = 28; gy < height; gy += 38) {
+                        ctx.beginPath();
+                        ctx.arc(gx, gy, 1.6, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
                 }
             }
 
             // 居中主卡片阴影与边框
+            const cardRadius = palette.id === "apple_bento" ? 34 : 26;
             ctx.save();
-            ctx.shadowColor = isDark ? "rgba(0, 0, 0, 0.55)" : "rgba(15, 23, 42, 0.08)";
-            ctx.shadowBlur = 34;
+            ctx.shadowColor = palette.shadowColor;
+            ctx.shadowBlur = palette.id === "apple_bento" ? 42 : 30;
             ctx.shadowOffsetY = 12;
             ctx.fillStyle = palette.cardBg;
             ctx.beginPath();
-            ctx.roundRect(48, 48, width - 96, height - 96, 28);
+            ctx.roundRect(48, 48, width - 96, height - 96, cardRadius);
             ctx.fill();
             ctx.restore();
 
             ctx.strokeStyle = palette.cardBorder;
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.roundRect(48, 48, width - 96, height - 96, 28);
+            ctx.roundRect(48, 48, width - 96, height - 96, cardRadius);
             ctx.stroke();
 
-            // 顶部极客蓝渐变装饰条
+            // 顶部主题高对比重点色条 / 杂志页眉线
             ctx.save();
             ctx.beginPath();
-            ctx.roundRect(48, 48, width - 96, height - 96, 28);
+            ctx.roundRect(48, 48, width - 96, height - 96, cardRadius);
             ctx.clip();
-            const barGrad = ctx.createLinearGradient(48, 48, width - 48, 48);
-            barGrad.addColorStop(0, "#0284c7");
-            barGrad.addColorStop(1, "#38bdf8");
-            ctx.fillStyle = barGrad;
-            ctx.fillRect(48, 48, width - 96, 10);
+            if (palette.id === "swiss_white") {
+                ctx.fillStyle = palette.accent;
+                ctx.fillRect(48, 48, (width - 96) * 0.72, 12);
+                ctx.fillStyle = palette.accentSecondary;
+                ctx.fillRect(48 + (width - 96) * 0.72, 48, (width - 96) * 0.28, 12);
+            } else {
+                const barGrad = ctx.createLinearGradient(48, 48, width - 48, 48);
+                barGrad.addColorStop(0, palette.accent);
+                barGrad.addColorStop(1, palette.accentSecondary);
+                ctx.fillStyle = barGrad;
+                ctx.fillRect(48, 48, width - 96, 12);
+            }
             ctx.restore();
 
             let drawY = 0;
             if (p === 0) {
-                // Card 1: 顶部胶囊 + 巨幕标题 + 分割短条
-                ctx.font = `700 22px ${fontFamily}`;
-                const capW = Math.min(contentW, ctx.measureText(cleanCapsule).width + 36);
-                ctx.fillStyle = palette.accentSoft;
-                ctx.beginPath();
-                ctx.roundRect(padX, 102, capW, 44, 10);
-                ctx.fill();
-                ctx.fillStyle = palette.accent;
-                ctx.textBaseline = "middle";
-                ctx.fillText(cleanCapsule, padX + 18, 124, contentW - 36);
+                // Card 1: 顶部胶囊 + 杂志页眉号 + 巨幕标题 + 重点色分割条
+                this.drawBadgePill(ctx, palette, cleanCapsule, padX, 102, 44, `700 22px ${fontFamily}`, contentW - 140);
+                if (palette.id === "swiss_white") {
+                    ctx.font = `700 18px ${fontFamily}`;
+                    ctx.fillStyle = palette.muted;
+                    ctx.textAlign = "right";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText("ISSUE · 01", width - padX, 124);
+                    ctx.textAlign = "left";
+                }
 
                 ctx.font = `800 46px ${fontFamily}`;
                 ctx.fillStyle = palette.title;
@@ -759,21 +920,27 @@ class CoverRenderer {
                     ty += 64;
                 }
 
-                const sepGrad = ctx.createLinearGradient(padX, ty + 14, padX + 120, ty + 14);
-                sepGrad.addColorStop(0, "#0284c7");
-                sepGrad.addColorStop(1, "#38bdf8");
+                const sepGrad = ctx.createLinearGradient(padX, ty + 14, padX + 130, ty + 14);
+                sepGrad.addColorStop(0, palette.accent);
+                sepGrad.addColorStop(1, palette.accentSecondary);
                 ctx.fillStyle = sepGrad;
                 ctx.beginPath();
-                ctx.roundRect(padX, ty + 12, 110, 6, 3);
+                ctx.roundRect(padX, ty + 12, 120, 7, 3.5);
                 ctx.fill();
                 drawY = firstCardStartY;
             } else {
-                // Card 2..N: 顶部紧凑导读条
+                // Card 2..N: 顶部紧凑导读条 + 杂志页眉线
                 ctx.font = `600 23px ${fontFamily}`;
                 ctx.fillStyle = palette.muted;
                 ctx.textBaseline = "top";
-                const shortHeader = Array.from(cleanTitle).slice(0, 26).join("") + (Array.from(cleanTitle).length > 26 ? "…" : "");
+                const shortHeader = Array.from(cleanTitle).slice(0, 24).join("") + (Array.from(cleanTitle).length > 24 ? "…" : "");
                 ctx.fillText(shortHeader, padX, 104);
+                if (palette.id === "swiss_white") {
+                    ctx.fillStyle = palette.accentSecondary;
+                    ctx.textAlign = "right";
+                    ctx.fillText(`PAGE ${String(p + 1).padStart(2, "0")}`, width - padX, 104);
+                    ctx.textAlign = "left";
+                }
                 ctx.strokeStyle = palette.divider;
                 ctx.lineWidth = 2;
                 ctx.beginPath();
@@ -1218,29 +1385,183 @@ class DocParser {
     }
 
     /**
-     * 解析小红书图文数据：<=20字短标题 + 剥离末尾 #话题 的纯净正文 + 独立话题词数组（去 # 号）
+     * 智能提纯小绿书 / 小红书发布正文：
+     * 1) 剥离顶部/文末工程元信息引用块与键值行（作者、定位、文章概览、形式、草稿id、media_id、尺寸、归档、思源等及公众号名片）
+     * 2) 识别结构化正文分区（## 小绿书正文 / ## 笔记正文 / ## 发布正文 / ## 正文），遇到后续贴图/配图/套卡/预览/归档标题立即截断
      */
-    static parseXiaohongshuContent(markdown = "", title = "", fallbackTagsStr = "") {
+    static extractCleanEditorialBody(markdown = "", title = "", { preserveMarkdown = false, keepLinkUrls = false } = {}) {
         let text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         text = text.replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/, "");
         text = text.replace(/!\[[^\]]*\]\([^)]+\)/g, "");
         text = text.replace(/<img\b[^>]*>/gi, "");
-        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => (label && label.trim() ? label.trim() : url));
-        text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-        text = text.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
-        text = text.replace(/^#{1,6}[ \t]+/gm, "");
-        text = text.replace(/^>[ \t]?/gm, "");
-        text = text.replace(/^(?:---|\*\*\*|___)$/gm, "");
-        text = text.replace(/(\*\*|__|~~|`)/g, "");
 
+        const bodyHeadingRe = /^(?:小绿书正文|小红书正文|笔记正文|发布正文|文章正文|图文正文|文案正文|完整正文(?:描述)?|正文内容|正文)(?:\s*[（(].*[）)])?$/i;
+        const nonBodyHeadingRe = /^(?:(?:\d+\s*张\s*)?(?:3\s*[:：]\s*4|4\s*[:：]\s*3|9\s*[:：]\s*16)?\s*(?:竖版|横版|高清|图文)?\s*(?:贴图|配图|套卡|卡片|插图|封面图?|图片)|套卡预览|配图预览|封面与内页|贴图预览|本地归档|归档信息|发布元数据|元数据|短标题|备选标题|标题备选|参考资料)(?:\s*[（(].*[）)])?$/i;
+
+        const rawLines = text.split("\n");
+        let inCode = false;
+        let bodySectionStart = -1;
+        let bodySectionLevel = 0;
+
+        for (let i = 0; i < rawLines.length; i++) {
+            const t = rawLines[i].trim();
+            if (/^```/.test(t)) {
+                inCode = !inCode;
+                continue;
+            }
+            if (inCode) continue;
+            const hm = t.match(/^(#{1,6})[ \t]+(.+)$/);
+            if (hm) {
+                const lvl = hm[1].length;
+                const hTitle = hm[2].replace(/[*_`]/g, "").trim();
+                if (bodyHeadingRe.test(hTitle)) {
+                    bodySectionStart = i + 1;
+                    bodySectionLevel = lvl;
+                    break;
+                }
+            }
+        }
+
+        let scopedLines = [];
+        inCode = false;
+        if (bodySectionStart !== -1) {
+            for (let i = bodySectionStart; i < rawLines.length; i++) {
+                const t = rawLines[i].trim();
+                if (/^```/.test(t)) {
+                    inCode = !inCode;
+                    scopedLines.push(rawLines[i]);
+                    continue;
+                }
+                if (!inCode) {
+                    const hm = t.match(/^(#{1,6})[ \t]+(.+)$/);
+                    if (hm) {
+                        const lvl = hm[1].length;
+                        const hTitle = hm[2].replace(/[*_`]/g, "").trim();
+                        if (lvl <= bodySectionLevel || nonBodyHeadingRe.test(hTitle)) {
+                            break;
+                        }
+                    }
+                }
+                scopedLines.push(rawLines[i]);
+            }
+        } else {
+            let skipLevel = 0;
+            for (let i = 0; i < rawLines.length; i++) {
+                const t = rawLines[i].trim();
+                if (/^```/.test(t)) {
+                    inCode = !inCode;
+                    if (!skipLevel) scopedLines.push(rawLines[i]);
+                    continue;
+                }
+                if (!inCode) {
+                    const hm = t.match(/^(#{1,6})[ \t]+(.+)$/);
+                    if (hm) {
+                        const lvl = hm[1].length;
+                        const hTitle = hm[2].replace(/[*_`]/g, "").trim();
+                        if (skipLevel && lvl <= skipLevel) {
+                            skipLevel = 0;
+                        }
+                        if (nonBodyHeadingRe.test(hTitle)) {
+                            skipLevel = lvl;
+                            continue;
+                        }
+                    }
+                }
+                if (!skipLevel) {
+                    scopedLines.push(rawLines[i]);
+                }
+            }
+        }
+
+        const isMetaPlainText = (plain) => {
+            const s = String(plain || "").replace(/^[-*+•]\s*/, "").replace(/[*_`]/g, "").trim();
+            if (!s) return false;
+            if (/^(?:作者|定位|文章概览|形式|类型|渠道|平台|草稿(?:\s*(?:id|media_id|状态))?|media_id|draft_id|尺寸|分辨率|归档(?:路径|目录)?|思源(?:路径|文档|ID|Block)?|发布时间|生成时间)\s*[：:]/i.test(s)) {
+                return true;
+            }
+            if (/^(?:💡\s*)?关注\s*【.*】/.test(s) || /^欢迎在评论区探讨/.test(s) || /^洞悉技术底层与生态演进/.test(s)) {
+                return true;
+            }
+            if (/(?:\bmedia_id\b|\bdraft_id\b|\/自媒体矩阵\/|1080\s*[×xX*]\s*1440|3\s*[:：]\s*4\s*竖版|微信小绿书[（(])/.test(s) && s.length <= 140) {
+                return true;
+            }
+            return false;
+        };
+
+        // 过滤包含工程元信息或公众号名片的连续引用块及独立键值行
+        const filteredLines = [];
+        inCode = false;
+        for (let i = 0; i < scopedLines.length; i++) {
+            const raw = scopedLines[i];
+            const trimmed = raw.trim();
+            if (/^```/.test(trimmed)) {
+                inCode = !inCode;
+                filteredLines.push(raw);
+                continue;
+            }
+            if (!inCode && /^>/.test(trimmed)) {
+                const quoteGroup = [];
+                while (i < scopedLines.length && /^>/.test(scopedLines[i].trim())) {
+                    quoteGroup.push(scopedLines[i]);
+                    i++;
+                }
+                i--;
+                const hasMetaLine = quoteGroup.some(ql => isMetaPlainText(ql.trim().replace(/^>[ \t]?/, "")));
+                if (!hasMetaLine) {
+                    filteredLines.push(...quoteGroup);
+                }
+                continue;
+            }
+            if (!inCode && isMetaPlainText(trimmed)) {
+                continue;
+            }
+            filteredLines.push(raw);
+        }
+
+        let cleaned = filteredLines.join("\n");
+        cleaned = cleaned.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => {
+            if (label && label.trim()) {
+                return keepLinkUrls ? `${label.trim()} (${url})` : label.trim();
+            }
+            return url;
+        });
+        cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+        if (!preserveMarkdown) {
+            cleaned = cleaned.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
+            cleaned = cleaned.replace(/^#{1,6}[ \t]+/gm, "");
+            cleaned = cleaned.replace(/^>[ \t]?/gm, "");
+            cleaned = cleaned.replace(/^(?:---|\*\*\*|___)$/gm, "");
+            cleaned = cleaned.replace(/(\*\*|__|~~|`)/g, "");
+        }
+        cleaned = cleaned.replace(/\u200b/g, "");
+
+        const normTitle = String(title || "").replace(/^[#\s]+/, "").replace(/\s+/g, " ").trim();
+        const outLines = cleaned.split("\n").map(l => l.trimEnd());
+        while (outLines.length > 0 && !outLines[0].trim()) {
+            outLines.shift();
+        }
+        if (outLines.length > 0 && normTitle) {
+            const firstPlain = outLines[0].trim().replace(/^#+\s+/, "").replace(/\s+/g, " ");
+            if (firstPlain === normTitle) {
+                outLines.shift();
+            }
+        }
+
+        return outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    /**
+     * 解析小红书图文数据：<=20字短标题 + 剥离末尾 #话题 的纯净正文 + 独立话题词数组（去 # 号）
+     */
+    static parseXiaohongshuContent(markdown = "", title = "", fallbackTagsStr = "") {
         const cleanTitleRaw = String(title || "").replace(/^[#\s]+/, "").trim() || "思源图文手记";
         const xhsTitle = Array.from(cleanTitleRaw).slice(0, 20).join("");
-
-        // 剥离开头与标题重复的首行
-        const lines = text.split("\n");
-        if (lines.length > 0 && lines[0].trim().replace(/\s+/g, " ") === cleanTitleRaw.replace(/\s+/g, " ")) {
-            lines.shift();
-        }
+        const purifiedText = this.extractCleanEditorialBody(markdown, cleanTitleRaw, {
+            preserveMarkdown: false,
+            keepLinkUrls: false
+        });
+        const lines = purifiedText ? purifiedText.split("\n") : [];
 
         // 提取全部有效 #话题（过滤十六进制色号与纯数字）
         const hashtags = [];
@@ -2359,28 +2680,13 @@ class WeChatOfficialApi {
     }
 
     /**
-     * 清洗 Markdown 为微信小绿书 (newspic) 纯文本内容，保留段落换行与 #话题标签，截断 <= 1000 字
+     * 清洗 Markdown 为微信小绿书 (newspic) 纯文本内容，自动剥离元信息与贴图分段，保留段落换行与 #话题标签，截断 <= 1000 字
      */
     static formatNewspicContent(markdown = "", title = "") {
-        let text = String(markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        text = text.replace(/^---[\r\n]+[\s\S]*?[\r\n]+---[\r\n]*/, "");
-        text = text.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, "");
-        text = text.replace(/<img\b[^>]*>\s*/gi, "");
-        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => (label && label.trim() ? `${label.trim()} (${url})` : url));
-        text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-        text = text.replace(/```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g, "$1");
-        text = text.replace(/^#{1,6}[ \t]+/gm, "");
-        text = text.replace(/^>[ \t]?/gm, "");
-        text = text.replace(/^(?:---|\*\*\*|___)$/gm, "");
-        text = text.replace(/(\*\*|__|~~|`)/g, "");
-        text = text.replace(/\u200b/g, "");
-
-        const normTitle = String(title || "").replace(/\s+/g, " ").trim();
-        const lines = text.split("\n").map(l => l.trimEnd());
-        if (lines.length > 0 && normTitle && lines[0].trim().replace(/\s+/g, " ") === normTitle) {
-            lines.shift();
-        }
-        let cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+        const normTitle = String(title || "").replace(/^[#\s]+/, "").replace(/\s+/g, " ").trim();
+        let cleaned = typeof DocParser !== "undefined" && typeof DocParser.extractCleanEditorialBody === "function"
+            ? DocParser.extractCleanEditorialBody(markdown, normTitle, { preserveMarkdown: false, keepLinkUrls: true })
+            : String(markdown || "").trim();
         if (!cleaned) cleaned = normTitle || "图文分享";
         return this.sliceCodePoints(cleaned, 1000);
     }
@@ -2478,6 +2784,7 @@ const DEFAULT_CONFIG = {
     tags: "技术, 生产力, 架构",
     port: 18999,
     xhsMode: "safe_assist",
+    cardTheme: "swiss_white",
     licenseKey: "",
     licenseVerifiedEdition: "FREE",
     wechatMp: {
@@ -2507,6 +2814,7 @@ class MetrixPlugin extends siyuan.Plugin {
         this.bridgeServer = new MatrixBridgeServer(18999);
         this.currentDocId = null;
         this.currentDocTitle = "";
+        this.isPublishing = false;
     }
 
     async onload() {
@@ -2625,6 +2933,9 @@ class MetrixPlugin extends siyuan.Plugin {
                 if (this.config.xhsMode !== "human_auto") {
                     this.config.xhsMode = "safe_assist";
                 }
+                if (!CoverRenderer.CARD_THEMES[this.config.cardTheme]) {
+                    this.config.cardTheme = "swiss_white";
+                }
             }
         } catch (e) {
             console.warn("[Metrix] 读取配置失败，采用默认值:", e);
@@ -2646,8 +2957,8 @@ class MetrixPlugin extends siyuan.Plugin {
             cfgCount = Number(this.config.dailyUsage.count) || 0;
         }
         let lsCount = 0;
-        if (typeof localStorage !== "undefined") {
-            try {
+        try {
+            if (typeof localStorage !== "undefined") {
                 const raw = localStorage.getItem("siyuan_metrix_daily_quota");
                 if (raw) {
                     const parsed = JSON.parse(raw);
@@ -2655,8 +2966,8 @@ class MetrixPlugin extends siyuan.Plugin {
                         lsCount = Number(parsed.count) || 0;
                     }
                 }
-            } catch (e) {}
-        }
+            }
+        } catch (e) {}
         return Math.max(cfgCount, lsCount);
     }
 
@@ -2669,11 +2980,11 @@ class MetrixPlugin extends siyuan.Plugin {
         const today = this.getLocalDateKey();
         const nextCount = this.getDailyUsageCount() + 1;
         const dailyUsage = { date: today, count: nextCount };
-        if (typeof localStorage !== "undefined") {
-            try {
+        try {
+            if (typeof localStorage !== "undefined") {
                 localStorage.setItem("siyuan_metrix_daily_quota", JSON.stringify(dailyUsage));
-            } catch (e) {}
-        }
+            }
+        } catch (e) {}
         await this.saveConfig({ dailyUsage });
     }
 
@@ -2686,11 +2997,11 @@ class MetrixPlugin extends siyuan.Plugin {
         } catch (e) {
             console.warn("[Metrix] saveData 失败:", e);
         }
-        if (typeof localStorage !== "undefined") {
-            try {
+        try {
+            if (typeof localStorage !== "undefined") {
                 localStorage.setItem("siyuan_metrix_config", JSON.stringify(this.config));
-            } catch (e) {}
-        }
+            }
+        } catch (e) {}
     }
 
     getLicenseEdition() {
@@ -2838,6 +3149,15 @@ class MetrixPlugin extends siyuan.Plugin {
                     <div class="metrix-form-row">
                         <label class="metrix-field-label">默认发布文章标签 (逗号分隔)</label>
                         <input id="metrix-set-tags" class="metrix-input" value="${this.escapeHtml(cfg.tags)}" placeholder="例如：技术, 生产力, 架构" />
+                    </div>
+                    <div class="metrix-form-row">
+                        <label class="metrix-field-label">默认封面与 3:4 套卡视觉风格</label>
+                        <select id="metrix-set-card-theme" class="metrix-select">
+                            <option value="swiss_white" ${(cfg.cardTheme || 'swiss_white') === 'swiss_white' ? 'selected' : ''}>☀️ 瑞士杂志白（浅雾白底 + 克莱因蓝/珊瑚橙）</option>
+                            <option value="apple_bento" ${cfg.cardTheme === 'apple_bento' ? 'selected' : ''}>🍱 苹果浅灰 Bento（圆角白卡微投影 + 紫蓝渐变）</option>
+                            <option value="warm_cream" ${cfg.cardTheme === 'warm_cream' ? 'selected' : ''}>🍑 暖杏奶油纸（米杏纸感 + 焦糖棕黑）</option>
+                            <option value="mint_forest" ${cfg.cardTheme === 'mint_forest' ? 'selected' : ''}>🌿 薄荷森系绿（鼠尾草浅绿 + 深松绿）</option>
+                        </select>
                     </div>
                 </div>
 
@@ -3011,6 +3331,8 @@ class MetrixPlugin extends siyuan.Plugin {
                     const wxAppId = document.getElementById("metrix-set-wx-appid")?.value?.trim() || "";
                     const wxAppSecret = document.getElementById("metrix-set-wx-secret")?.value?.trim() || "";
                     const xhsMode = document.getElementById("metrix-set-xhs-mode")?.value === "human_auto" ? "human_auto" : "safe_assist";
+                    const rawCardTheme = document.getElementById("metrix-set-card-theme")?.value || "swiss_white";
+                    const cardTheme = CoverRenderer.CARD_THEMES[rawCardTheme] ? rawCardTheme : "swiss_white";
 
                     await this.saveConfig({
                         author,
@@ -3018,6 +3340,7 @@ class MetrixPlugin extends siyuan.Plugin {
                         tags,
                         port,
                         xhsMode,
+                        cardTheme,
                         licenseKey: licVal,
                         licenseVerifiedEdition: verifiedEd,
                         wechatMp: {
@@ -3163,7 +3486,8 @@ class MetrixPlugin extends siyuan.Plugin {
         const isPro = this.isPro();
         const edition = this.getLicenseEdition();
         const defaultCapsule = isPro ? (this.config.capsule || FREE_DEFAULT_CAPSULE) : FREE_DEFAULT_CAPSULE;
-        const coverCanvas = await CoverRenderer.renderWechatCover(docData.title, defaultCapsule);
+        const curCardTheme = CoverRenderer.CARD_THEMES[this.config.cardTheme] ? this.config.cardTheme : "swiss_white";
+        const coverCanvas = await CoverRenderer.renderWechatCover(docData.title, defaultCapsule, this.config.tags || "架构师实战 · 生产环境落地指南", curCardTheme);
         const coverDataURL = CoverRenderer.canvasToDataURL(coverCanvas);
         let coverBuffer = await CoverRenderer.canvasToBuffer(coverCanvas);
         let latestCoverPromise = Promise.resolve(coverBuffer);
@@ -3222,6 +3546,27 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div>
                             <div class="metrix-field-label">摘要 (Digest)</div>
                             <textarea id="metrix-input-digest" class="metrix-input" rows="3" style="resize: vertical;">${this.escapeHtml(docData.digest)}</textarea>
+                        </div>
+                        <div>
+                            <div class="metrix-field-label">视觉卡片风格（封面 & 无图 3:4 套卡通用）</div>
+                            <div id="metrix-card-theme-pills" class="metrix-theme-pills">
+                                <button type="button" class="metrix-theme-pill ${curCardTheme === 'swiss_white' ? 'active' : ''}" data-theme="swiss_white">
+                                    <span class="metrix-theme-dot" style="background:linear-gradient(135deg,#F8F9FC 45%,#0047AB 45%,#FF5A36 100%);"></span>
+                                    <span>☀️ 瑞士杂志白</span>
+                                </button>
+                                <button type="button" class="metrix-theme-pill ${curCardTheme === 'apple_bento' ? 'active' : ''}" data-theme="apple_bento">
+                                    <span class="metrix-theme-dot" style="background:linear-gradient(135deg,#F5F5F7 40%,#4F46E5 75%,#0EA5E9 100%);"></span>
+                                    <span>🍱 苹果浅灰 Bento</span>
+                                </button>
+                                <button type="button" class="metrix-theme-pill ${curCardTheme === 'warm_cream' ? 'active' : ''}" data-theme="warm_cream">
+                                    <span class="metrix-theme-dot" style="background:linear-gradient(135deg,#FDFBF7 45%,#D97736 100%);"></span>
+                                    <span>🍑 暖杏奶油纸</span>
+                                </button>
+                                <button type="button" class="metrix-theme-pill ${curCardTheme === 'mint_forest' ? 'active' : ''}" data-theme="mint_forest">
+                                    <span class="metrix-theme-dot" style="background:linear-gradient(135deg,#F3F8F5 45%,#059669 100%);"></span>
+                                    <span>🌿 薄荷森系绿</span>
+                                </button>
+                            </div>
                         </div>
                         <div>
                             <div class="metrix-field-label">Canvas 实时渲染封面 (2.35:1 / 900x383)</div>
@@ -3330,6 +3675,7 @@ class MetrixPlugin extends siyuan.Plugin {
 
                 <div class="metrix-footer">
                     <button class="metrix-btn-secondary" id="metrix-btn-copy-html">📋 仅复制微信排版</button>
+                    <span id="metrix-dispatch-progress" class="metrix-dispatch-progress"></span>
                     <button class="metrix-btn-primary" id="metrix-btn-dispatch"><span>🚀 一键分发至草稿箱</span></button>
                 </div>
             </div>
@@ -3348,7 +3694,8 @@ class MetrixPlugin extends siyuan.Plugin {
                 const curCapsule = this.isPro()
                     ? (document.getElementById("metrix-input-capsule")?.value?.trim() || defaultCapsule)
                     : FREE_DEFAULT_CAPSULE;
-                const canvas = await CoverRenderer.renderWechatCover(curTitle, curCapsule);
+                const activeTheme = CoverRenderer.CARD_THEMES[this.config.cardTheme] ? this.config.cardTheme : "swiss_white";
+                const canvas = await CoverRenderer.renderWechatCover(curTitle, curCapsule, this.config.tags || "架构师实战 · 生产环境落地指南", activeTheme);
                 const img = document.getElementById("metrix-img-cover");
                 if (img) img.src = CoverRenderer.canvasToDataURL(canvas);
                 coverBuffer = await CoverRenderer.canvasToBuffer(canvas);
@@ -3358,6 +3705,17 @@ class MetrixPlugin extends siyuan.Plugin {
         };
 
         setTimeout(() => {
+            document.querySelectorAll("#metrix-card-theme-pills .metrix-theme-pill").forEach(pill => {
+                pill.onclick = async () => {
+                    const nextTheme = pill.getAttribute("data-theme") || "swiss_white";
+                    if (!CoverRenderer.CARD_THEMES[nextTheme]) return;
+                    document.querySelectorAll("#metrix-card-theme-pills .metrix-theme-pill").forEach(p => {
+                        p.classList.toggle("active", p === pill);
+                    });
+                    await this.saveConfig({ cardTheme: nextTheme });
+                    updateCoverLive();
+                };
+            });
             const tInput = document.getElementById("metrix-input-title");
             if (tInput) {
                 tInput.value = docData.title || "";
@@ -3513,16 +3871,98 @@ class MetrixPlugin extends siyuan.Plugin {
             };
         }
 
+        const yieldFrame = () => new Promise(resolve => {
+            if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(() => setTimeout(resolve, 16));
+            } else {
+                setTimeout(resolve, 16);
+            }
+        });
+
+        const setDispatchLoading = (loading, statusText = "") => {
+            const btn = document.getElementById("metrix-btn-dispatch");
+            const progressEl = document.getElementById("metrix-dispatch-progress");
+            if (btn) {
+                btn.disabled = Boolean(loading);
+                btn.classList.toggle("is-loading", Boolean(loading));
+                if (loading) {
+                    const safeTxt = this.escapeHtml(statusText || "正在分发中...");
+                    btn.innerHTML = `<span class="metrix-spinner"></span><span>${safeTxt}</span>`;
+                } else {
+                    btn.innerHTML = `<span>🚀 一键分发至草稿箱</span>`;
+                }
+            }
+            if (progressEl) {
+                progressEl.textContent = loading ? (statusText || "") : "";
+            }
+        };
+
         const dispatchBtn = document.getElementById("metrix-btn-dispatch");
         if (dispatchBtn) {
             dispatchBtn.onclick = async () => {
-                const freshCoverBuf = await latestCoverPromise;
-                await this.executeDispatch(docData, inlineHtml, freshCoverBuf);
+                if (this.isPublishing) return;
+                this.isPublishing = true;
+                setDispatchLoading(true, "⏳ 正在读取笔记...");
+                // 让出主线程一帧，确保 0ms 瞬时渲染按钮 Loading 与禁用态，绝不假死防连点
+                await yieldFrame();
+                try {
+                    const freshCoverBuf = await latestCoverPromise;
+                    await this._executeDispatchInternal(docData, inlineHtml, freshCoverBuf, {
+                        onProgress: (stepText) => setDispatchLoading(true, stepText),
+                        yieldFrame
+                    });
+                } finally {
+                    this.isPublishing = false;
+                    setDispatchLoading(false);
+                }
             };
         }
     }
 
     async executeDispatch(docData, inlineHtml, coverBuffer) {
+        if (this.isPublishing) return;
+        this.isPublishing = true;
+        const btn = typeof document !== "undefined" ? document.getElementById("metrix-btn-dispatch") : null;
+        const progressEl = typeof document !== "undefined" ? document.getElementById("metrix-dispatch-progress") : null;
+        const yieldFrame = () => new Promise(resolve => {
+            if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(() => setTimeout(resolve, 16));
+            } else {
+                setTimeout(resolve, 16);
+            }
+        });
+        const updateUi = (loading, text = "") => {
+            if (btn) {
+                btn.disabled = Boolean(loading);
+                btn.classList.toggle("is-loading", Boolean(loading));
+                btn.innerHTML = loading
+                    ? `<span class="metrix-spinner"></span><span>${this.escapeHtml(text || "正在分发...")}</span>`
+                    : `<span>🚀 一键分发至草稿箱</span>`;
+            }
+            if (progressEl) {
+                progressEl.textContent = loading ? text : "";
+            }
+        };
+        updateUi(true, "⏳ 正在读取笔记...");
+        await yieldFrame();
+        try {
+            return await this._executeDispatchInternal(docData, inlineHtml, coverBuffer, {
+                onProgress: (stepText) => updateUi(true, stepText),
+                yieldFrame
+            });
+        } finally {
+            this.isPublishing = false;
+            updateUi(false);
+        }
+    }
+
+    async _executeDispatchInternal(docData, inlineHtml, coverBuffer, { onProgress, yieldFrame } = {}) {
+        const reportProgress = (text) => {
+            if (typeof onProgress === "function") onProgress(text);
+        };
+        const pausePaint = async () => {
+            if (typeof yieldFrame === "function") await yieldFrame();
+        };
         const titleInput = document.getElementById("metrix-input-title");
         const digestInput = document.getElementById("metrix-input-digest");
         const finalTitle = (titleInput ? titleInput.value.trim() : "") || docData.title;
@@ -3601,8 +4041,12 @@ class MetrixPlugin extends siyuan.Plugin {
             const rawOrdered = (docData.orderedImages && docData.orderedImages.length > 0)
                 ? docData.orderedImages
                 : DocParser.extractOrderedImages(docData.markdown, docData.docId, maxNeeded);
+            const targetList = rawOrdered.slice(0, maxNeeded);
 
-            for (const imgItem of rawOrdered.slice(0, maxNeeded)) {
+            for (let i = 0; i < targetList.length; i++) {
+                const imgItem = targetList[i];
+                reportProgress(`⏳ 正在打包套卡图片 (${i + 1}/${targetList.length})...`);
+                await pausePaint();
                 try {
                     const resolved = await ThemeEngine.resolveImagePayload(imgItem, docData.dataDir);
                     if (resolved && resolved.buffer && resolved.buffer.length > 0) {
@@ -3618,13 +4062,16 @@ class MetrixPlugin extends siyuan.Plugin {
                     ? (document.getElementById("metrix-input-capsule")?.value?.trim() || this.config.capsule || FREE_DEFAULT_CAPSULE)
                     : FREE_DEFAULT_CAPSULE;
                 const curAuthor = isPro ? (this.config.author || DEFAULT_CONFIG.author) : DEFAULT_CONFIG.author;
+                const curTheme = CoverRenderer.CARD_THEMES[this.config.cardTheme] ? this.config.cardTheme : "swiss_white";
+                reportProgress("🎨 正在生成 3:4 清爽图文卡片...");
+                await pausePaint();
                 siyuan.showMessage("🎨 当前笔记无配图，正在自动生成 3:4 高清图文卡片...", 2000, "info");
                 editorialImages = await CoverRenderer.renderNewspicCards({
                     title: finalTitle,
                     markdown: docData.markdown,
                     author: curAuthor,
                     capsule: curCapsule,
-                    theme: "light",
+                    theme: curTheme,
                     maxCards: 4
                 });
             }
@@ -3637,12 +4084,16 @@ class MetrixPlugin extends siyuan.Plugin {
             let finalMarkdown = docData.markdown;
             const bedType = isPro ? (this.config.imageBed?.type || "none") : "none";
             if (bedType !== "none" && docData.referencedAssets?.length > 0) {
+                reportProgress(`⏳ 正在同步图片至 ${bedType} 图床...`);
+                await pausePaint();
                 try {
                     finalMarkdown = await this.uploadAssetsViaImageBed(docData.markdown, docData.referencedAssets, docData.dataDir, bedType);
                 } catch (e) {
                     console.warn("[Metrix] 图床处理失败，自动保留原稿:", e);
                 }
             }
+            reportProgress("⏳ 正在生成多平台排版载荷...");
+            await pausePaint();
             const companionHtml = await ThemeEngine.renderToSemanticHtml(finalMarkdown, docData.dataDir);
 
             const taskId = `task_${Date.now()}`;
@@ -3656,6 +4107,8 @@ class MetrixPlugin extends siyuan.Plugin {
             if (docData.referencedAssets.length > 0) {
                 for (let i = 0; i < docData.referencedAssets.length; i++) {
                     const item = docData.referencedAssets[i];
+                    reportProgress(`⏳ 正在打包配图资源 (${i + 1}/${docData.referencedAssets.length})...`);
+                    if (i % 2 === 0) await pausePaint();
                     const assetId = `asset_${i + 1}`;
                     let rawDataUrl = await ThemeEngine.resolveAssetBase64(item.relPath, docData.dataDir);
                     let detectedMime = "image/png";
@@ -3728,6 +4181,8 @@ class MetrixPlugin extends siyuan.Plugin {
                 if (el) el.innerHTML = "⏳ 分发中...";
             });
 
+            reportProgress("🚀 正在唤起浏览器伴侣...");
+            await pausePaint();
             const handshakeUrl = `http://127.0.0.1:${this.bridgeServer.port}/matrix-bridge?taskId=${taskId}#token=${taskToken}`;
             window.open(handshakeUrl);
             shouldConsumeFreeQuota = true;
@@ -3738,73 +4193,69 @@ class MetrixPlugin extends siyuan.Plugin {
 
         // 6. 分支 B：微信公众号长图文 & 微信小绿书官方草稿箱直推
         if (canDispatchWechat || canDispatchNewspic) {
-            const dispatchBtn = document.getElementById("metrix-btn-dispatch");
-            if (dispatchBtn) dispatchBtn.disabled = true;
-            try {
-                if (canDispatchWechat) {
-                    const wxStatusEl = document.getElementById("status-wechat");
-                    try {
-                        await WeChatOfficialApi.publishDraft({
-                            appId: wxAppId,
-                            appSecret: wxAppSecret,
-                            title: finalTitle,
-                            author: isPro ? (this.config.author || "") : "",
-                            digest: finalDigest,
-                            contentHtml: inlineHtml,
-                            coverBuffer,
-                            onStep: (stepText) => {
-                                if (wxStatusEl) wxStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
-                            }
-                        });
-                        if (wxStatusEl) {
-                            wxStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿箱</a>`;
+            if (canDispatchWechat) {
+                const wxStatusEl = document.getElementById("status-wechat");
+                try {
+                    await WeChatOfficialApi.publishDraft({
+                        appId: wxAppId,
+                        appSecret: wxAppSecret,
+                        title: finalTitle,
+                        author: isPro ? (this.config.author || "") : "",
+                        digest: finalDigest,
+                        contentHtml: inlineHtml,
+                        coverBuffer,
+                        onStep: (stepText) => {
+                            if (wxStatusEl) wxStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
+                            reportProgress(`⏳ 公众号：${String(stepText).replace(/^⏳\s*/, "")}`);
                         }
-                        shouldConsumeFreeQuota = true;
-                    } catch (err) {
-                        const errMsg = err?.message || String(err);
-                        if (wxStatusEl) {
-                            wxStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
-                        }
-                        siyuan.showMessage("❌ 公众号推送失败：" + errMsg, 5500, "error");
+                    });
+                    if (wxStatusEl) {
+                        wxStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿箱</a>`;
                     }
+                    shouldConsumeFreeQuota = true;
+                } catch (err) {
+                    const errMsg = err?.message || String(err);
+                    if (wxStatusEl) {
+                        wxStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
+                    }
+                    siyuan.showMessage("❌ 公众号推送失败：" + errMsg, 5500, "error");
                 }
+            }
 
-                if (canDispatchNewspic) {
-                    const npStatusEl = document.getElementById("status-wechat_newspic");
-                    try {
-                        const newspicContent = WeChatOfficialApi.formatNewspicContent(docData.markdown, finalTitle);
-                        const npRes = await WeChatOfficialApi.publishNewspicDraft({
-                            appId: wxAppId,
-                            appSecret: wxAppSecret,
-                            title: finalTitle,
-                            author: isPro ? (this.config.author || "") : "",
-                            contentText: newspicContent,
-                            images: editorialImages.slice(0, 20),
-                            onStep: (stepText) => {
-                                if (npStatusEl) npStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
-                            }
-                        });
-                        if (npStatusEl) {
-                            npStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿(${npRes.imageCount}图)</a>`;
+            if (canDispatchNewspic) {
+                const npStatusEl = document.getElementById("status-wechat_newspic");
+                try {
+                    const newspicContent = WeChatOfficialApi.formatNewspicContent(docData.markdown, finalTitle);
+                    const npRes = await WeChatOfficialApi.publishNewspicDraft({
+                        appId: wxAppId,
+                        appSecret: wxAppSecret,
+                        title: finalTitle,
+                        author: isPro ? (this.config.author || "") : "",
+                        contentText: newspicContent,
+                        images: editorialImages.slice(0, 20),
+                        onStep: (stepText) => {
+                            if (npStatusEl) npStatusEl.innerHTML = `<span style="color:#0284c7;">${stepText}</span>`;
+                            reportProgress(`⏳ 微信小绿书：${String(stepText).replace(/^⏳\s*/, "")}`);
                         }
-                        shouldConsumeFreeQuota = true;
-                        siyuan.showMessage(`🎉 微信小绿书已直推草稿箱（${npRes.imageCount} 张图）！`, 4500, "info");
-                    } catch (err) {
-                        const errMsg = err?.message || String(err);
-                        if (npStatusEl) {
-                            npStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
-                        }
-                        siyuan.showMessage("❌ 微信小绿书推送失败：" + errMsg, 5500, "error");
+                    });
+                    if (npStatusEl) {
+                        npStatusEl.innerHTML = `<a href="https://mp.weixin.qq.com" target="_blank" style="color:#22c55e; font-weight:600;">✔ 已入草稿(${npRes.imageCount}图)</a>`;
                     }
-                } else if (canDispatchWechat) {
-                    if (companionPlatforms.length > 0) {
-                        siyuan.showMessage("🎉 微信公众号已直推草稿箱，其余社区正在后台同步！", 4500, "info");
-                    } else {
-                        siyuan.showMessage("🎉 微信公众号草稿推送成功！可前往公众平台后台预览群发", 4500, "info");
+                    shouldConsumeFreeQuota = true;
+                    siyuan.showMessage(`🎉 微信小绿书已直推草稿箱（${npRes.imageCount} 张图）！`, 4500, "info");
+                } catch (err) {
+                    const errMsg = err?.message || String(err);
+                    if (npStatusEl) {
+                        npStatusEl.innerHTML = `<span style="color:#ef4444; cursor:help;" title="${this.escapeHtml(errMsg)}">❌ 推送失败</span>`;
                     }
+                    siyuan.showMessage("❌ 微信小绿书推送失败：" + errMsg, 5500, "error");
                 }
-            } finally {
-                if (dispatchBtn) dispatchBtn.disabled = false;
+            } else if (canDispatchWechat) {
+                if (companionPlatforms.length > 0) {
+                    siyuan.showMessage("🎉 微信公众号已直推草稿箱，其余社区正在后台同步！", 4500, "info");
+                } else {
+                    siyuan.showMessage("🎉 微信公众号草稿推送成功！可前往公众平台后台预览群发", 4500, "info");
+                }
             }
         }
 

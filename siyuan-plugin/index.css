@@ -41,11 +41,11 @@
 .metrix-left {
     flex: 1.1;
     border-right: 1px solid var(--b3-theme-surface-lighter);
-    padding: 16px 20px;
+    padding: 14px 20px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
 }
 
 .metrix-right {
@@ -97,6 +97,45 @@
     max-width: 100%;
     height: auto;
     display: block;
+}
+
+.metrix-theme-pills {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+}
+
+.metrix-theme-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 9px;
+    border-radius: 7px;
+    border: 1px solid var(--b3-theme-surface-lighter);
+    background: var(--b3-theme-surface);
+    color: var(--b3-theme-on-surface);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: left;
+}
+
+.metrix-theme-pill:hover {
+    border-color: #0284c7;
+}
+
+.metrix-theme-pill.active {
+    border-color: #0284c7;
+    background: rgba(2, 132, 199, 0.1);
+    font-weight: 600;
+}
+
+.metrix-theme-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(15, 23, 42, 0.14);
 }
 
 .metrix-platforms-grid {
@@ -205,9 +244,21 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
     padding: 14px 20px;
     border-top: 1px solid var(--b3-theme-surface-lighter);
     background: var(--b3-theme-surface);
+}
+
+.metrix-dispatch-progress {
+    flex: 1;
+    text-align: right;
+    font-size: 12px;
+    color: #0284c7;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .metrix-btn-primary {
@@ -219,14 +270,37 @@
     font-size: 13.5px;
     font-weight: 600;
     cursor: pointer;
-    transition: background 0.2s;
+    transition: background 0.2s, opacity 0.2s;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
+    white-space: nowrap;
 }
 
-.metrix-btn-primary:hover {
+.metrix-btn-primary:hover:not(:disabled) {
     background: #0369a1;
+}
+
+.metrix-btn-primary:disabled,
+.metrix-btn-primary.is-loading {
+    opacity: 0.65;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.metrix-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: metrix-spin 0.75s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes metrix-spin {
+    to { transform: rotate(360deg); }
 }
 
 .metrix-btn-secondary {
