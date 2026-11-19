@@ -4,7 +4,11 @@
 
 (async function () {
     const href = location.href;
+    const hostname = location.hostname;
     console.log("[Metrix Injector] 检测到页面:", href);
+
+    const isXHost = hostname === "x.com" || hostname.endsWith(".x.com") || hostname === "twitter.com" || hostname.endsWith(".twitter.com");
+    const isThreadsHost = hostname === "threads.com" || hostname.endsWith(".threads.com") || hostname === "threads.net" || hostname.endsWith(".threads.net");
 
     // 判断是否为草稿编辑页
     const isEditor = href.includes("zhuanlan.zhihu.com/write") ||
@@ -14,7 +18,9 @@
                      href.includes("mp.csdn.net/mp_blog/creation/editor") ||
                      href.includes("mp.toutiao.com/profile_v4/graphic/publish") ||
                      href.includes("member.bilibili.com/york/read-editor") ||
-                     href.includes("feishu.cn");
+                     href.includes("feishu.cn") ||
+                     (isXHost && (location.pathname.includes("/compose/post") || location.pathname.includes("/compose/tweet") || location.pathname.includes("/i/flow/login") || location.pathname.startsWith("/login"))) ||
+                     (isThreadsHost && (location.pathname === "/" || location.pathname === "" || location.pathname.startsWith("/create") || location.pathname.startsWith("/login")));
 
     if (!isEditor) {
         return;
@@ -31,17 +37,58 @@
         return;
     }
 
-    const hostname = location.hostname;
+    let pagePlatform = "";
+    if (hostname.includes("zhihu.com")) pagePlatform = "zhihu";
+    else if (hostname.includes("juejin.cn")) pagePlatform = "juejin";
+    else if (hostname.includes("csdn.net")) pagePlatform = "csdn";
+    else if (hostname.includes("toutiao.com")) pagePlatform = "toutiao";
+    else if (hostname.includes("bilibili.com")) pagePlatform = "bilibili";
+    else if (hostname.includes("feishu.cn")) pagePlatform = "feishu";
+    else if (isXHost) pagePlatform = "x";
+    else if (isThreadsHost) pagePlatform = "threads";
+
+    if (!pagePlatform) {
+        return;
+    }
+    if (pagePlatform === "x" || pagePlatform === "threads") {
+        if (!Array.isArray(currentTask.platforms) || !currentTask.platforms.includes(pagePlatform)) {
+            return;
+        }
+    } else if (Array.isArray(currentTask.platforms) && currentTask.platforms.length > 0 && !currentTask.platforms.includes(pagePlatform)) {
+        return;
+    }
+
     const article = currentTask.article;
 
-    // B站专栏已通过官方草稿 API 创建并跳转 ?aid=xxx 时，直接提示成功并回传状态，避免重复覆盖
-    if (hostname.includes("bilibili.com") && new URLSearchParams(location.search).get("aid")) {
+    // B站专栏跳转 ?aid=xxx 时，仅在核实编辑器正文确实非空时跳过，若正文为空则继续执行写入防止空草稿
+    if (pagePlatform === "bilibili" && new URLSearchParams(location.search).get("aid")) {
         const doneKey = `metrix_bili_done_${currentTask.taskId}`;
         if (sessionStorage.getItem(doneKey) === "1") {
-            showMetrixToast("✅ Metrix: B站专栏图文草稿已保存就绪！", 4000);
+            const pm = await waitForSelector(".editor-container .ProseMirror[contenteditable='true'], .ProseMirror[contenteditable='true']", 2500);
+            if (pm && (pm.textContent || "").trim().length >= 20) {
+                showMetrixToast("✅ Metrix: B站专栏图文草稿已保存就绪！", 4000);
+                chrome.runtime.sendMessage({
+                    type: "PLATFORM_DRAFT_STATUS",
+                    data: { platform: "bilibili", status: "success", draftUrl: location.href }
+                });
+                return;
+            }
+        }
+    }
+
+    // 海外短平台防重复弹窗/覆盖（仅在成功写入后锁定，失败允许刷新重试）
+    const socialDoneKey = `metrix_social_done_${currentTask.taskId}_${pagePlatform}`;
+    if (pagePlatform === "x" || pagePlatform === "threads") {
+        if (sessionStorage.getItem(socialDoneKey) === "1") {
+            return;
+        }
+        if (location.pathname.includes("/login") || location.pathname.includes("/i/flow/login")) {
+            const label = pagePlatform === "x" ? "X (Twitter)" : "Threads";
+            const errMsg = `请先在当前浏览器登录 ${label} 账号后再重新分发`;
+            showMetrixToast(`⚠️ ${errMsg}`, 6000);
             chrome.runtime.sendMessage({
                 type: "PLATFORM_DRAFT_STATUS",
-                data: { platform: "bilibili", status: "success", draftUrl: location.href }
+                data: { platform: pagePlatform, status: "failed", error: errMsg }
             });
             return;
         }
@@ -61,18 +108,20 @@
     }
 
     try {
-        if (hostname.includes("zhihu.com")) {
+        if (pagePlatform === "zhihu") {
             await handlePageBridgeOrFallback("zhihu", article, injectZhihuFallback);
-        } else if (hostname.includes("juejin.cn")) {
+        } else if (pagePlatform === "juejin") {
             await handlePageBridgeOrFallback("juejin", article, injectJuejinFallback);
-        } else if (hostname.includes("csdn.net")) {
+        } else if (pagePlatform === "csdn") {
             await handlePageBridgeOrFallback("csdn", article, injectCSDNFallback);
-        } else if (hostname.includes("toutiao.com")) {
+        } else if (pagePlatform === "toutiao") {
             await injectToutiao(article);
-        } else if (hostname.includes("bilibili.com")) {
+        } else if (pagePlatform === "bilibili") {
             await handlePageBridgeOrFallback("bilibili", article, injectBilibiliFallback);
-        } else if (hostname.includes("feishu.cn")) {
+        } else if (pagePlatform === "feishu") {
             await handleFeishu(article);
+        } else if (pagePlatform === "x" || pagePlatform === "threads") {
+            await handlePageBridgeOrFallback(pagePlatform, article, () => injectSocialFallback(pagePlatform, article));
         }
     } catch (err) {
         console.error("[Metrix Injector] 注入异常:", err);
@@ -85,11 +134,6 @@
 async function handlePageBridgeOrFallback(platformId, article, fallbackFn) {
     console.log(`[Metrix Injector] 请求 ${platformId} 原生页面桥接注入...`);
     try {
-        if (platformId === "bilibili") {
-            const storage = await chrome.storage.local.get("currentTask");
-            const tid = storage?.currentTask?.taskId;
-            if (tid) sessionStorage.setItem(`metrix_bili_done_${tid}`, "1");
-        }
         const res = await chrome.runtime.sendMessage({
             type: "FILL_PLATFORM_EDITOR",
             platformId,
@@ -103,10 +147,36 @@ async function handlePageBridgeOrFallback(platformId, article, fallbackFn) {
         });
 
         if (res && res.ok && res.result) {
+            if (res.result.ok === false) {
+                const errMsg = res.result.error || `${platformId} 写入失败`;
+                console.warn(`[Metrix Injector] ${platformId} 桥接返回失败:`, errMsg);
+                showMetrixToast(`⚠️ ${errMsg}`, 6000);
+                chrome.runtime.sendMessage({
+                    type: "PLATFORM_DRAFT_STATUS",
+                    data: { platform: platformId, status: "failed", error: errMsg }
+                });
+                return;
+            }
+            if (platformId === "bilibili") {
+                const storage = await chrome.storage.local.get("currentTask");
+                const tid = storage?.currentTask?.taskId;
+                if (tid) sessionStorage.setItem(`metrix_bili_done_${tid}`, "1");
+            }
             console.log(`[Metrix Injector] ${platformId} 原生页面桥接注入成功:`, res.result);
+            if (platformId === "x" || platformId === "threads") {
+                notifySocialInjectionSuccess(platformId, res.result);
+            } else if (platformId === "bilibili") {
+                showMetrixToast("✅ Metrix: B站专栏正文已注入并触发保存草稿！", 4500);
+            }
             chrome.runtime.sendMessage({
                 type: "PLATFORM_DRAFT_STATUS",
-                data: { platform: platformId, status: "success", draftUrl: res.result.draftUrl || location.href }
+                data: {
+                    platform: platformId,
+                    status: "success",
+                    draftUrl: res.result.draftUrl || location.href,
+                    editor: res.result.editor || "",
+                    contentLength: res.result.contentLength ?? res.result.length ?? null
+                }
             });
             return;
         }
@@ -671,5 +741,162 @@ async function injectFeishuFallback(article) {
     chrome.runtime.sendMessage({
         type: "PLATFORM_DRAFT_STATUS",
         data: { platform: "feishu", status: "success", draftUrl: location.href }
+    });
+}
+
+function copyTextWithFallback(text) {
+    if (!text) return Promise.resolve(false);
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        return navigator.clipboard.writeText(text).then(() => true).catch(() => {
+            try {
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0;";
+                document.body.appendChild(ta);
+                ta.select();
+                const ok = document.execCommand("copy");
+                ta.remove();
+                return ok;
+            } catch (e) {
+                return false;
+            }
+        });
+    }
+    return Promise.resolve(false);
+}
+
+function showSocialFloatingBar({ message, fullText, truncated }) {
+    try {
+        const old = document.getElementById("metrix-social-helper-bar");
+        if (old) old.remove();
+        const bar = document.createElement("div");
+        bar.id = "metrix-social-helper-bar";
+        bar.style.cssText = "position:fixed;bottom:24px;right:24px;z-index:999999;display:flex;align-items:center;gap:10px;max-width:540px;padding:11px 16px;background:#0f172a;color:#e2e8f0;border:1px solid #0284c7;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,0.45);font-size:13px;line-height:1.45;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;";
+
+        const txtSpan = document.createElement("span");
+        txtSpan.textContent = message;
+        bar.appendChild(txtSpan);
+
+        if (truncated && fullText) {
+            const copyBtn = document.createElement("button");
+            copyBtn.type = "button";
+            copyBtn.textContent = "📋 复制完整全文";
+            copyBtn.style.cssText = "white-space:nowrap;padding:5px 10px;border:none;border-radius:6px;background:#0284c7;color:#ffffff;font-size:12px;font-weight:600;cursor:pointer;";
+            copyBtn.onclick = async () => {
+                const ok = await copyTextWithFallback(fullText);
+                copyBtn.textContent = ok ? "✔ 已复制全文" : "⚠️ 请手动复制";
+                setTimeout(() => { copyBtn.textContent = "📋 复制完整全文"; }, 2200);
+            };
+            bar.appendChild(copyBtn);
+        }
+
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.textContent = "✕";
+        closeBtn.title = "关闭提示";
+        closeBtn.style.cssText = "border:none;background:transparent;color:#94a3b8;font-size:14px;cursor:pointer;padding:2px 4px;";
+        closeBtn.onclick = () => bar.remove();
+        bar.appendChild(closeBtn);
+
+        document.body.appendChild(bar);
+    } catch (e) {}
+}
+
+function notifySocialInjectionSuccess(platformId, result) {
+    try {
+        chrome.storage.local.get("currentTask").then((st) => {
+            const tid = st?.currentTask?.taskId;
+            if (tid) sessionStorage.setItem(`metrix_social_done_${tid}_${platformId}`, "1");
+        }).catch(() => {});
+    } catch (e) {}
+    const label = platformId === "x" ? "X (Twitter)" : "Threads";
+    const mediaMsg = result.mediaAttached > 0 ? `，已挂 ${result.mediaAttached} 张配图` : "";
+    if (result.truncated && result.fullText) {
+        copyTextWithFallback(result.fullText).catch(() => {});
+        showSocialFloatingBar({
+            message: `✅ Metrix: ${label} 摘要已注入 (${result.charCount} 字${mediaMsg})，正文超长已备好全文备份，请核对后手动发布。`,
+            fullText: result.fullText,
+            truncated: true
+        });
+    } else {
+        showMetrixToast(`✅ Metrix: ${label} 正文已就绪${mediaMsg}，请核对后手动发布`, 5000);
+    }
+}
+
+async function injectSocialFallback(platformId, article) {
+    console.log(`[Metrix] 执行 ${platformId} DOM 降级注入...`);
+    const label = platformId === "x" ? "X (Twitter)" : "Threads";
+    const editorSel = platformId === "x"
+        ? '[data-testid="tweetTextarea_0"][contenteditable="true"], [data-testid="tweetTextarea_0"] [contenteditable="true"], .public-DraftEditor-content[contenteditable="true"]'
+        : 'div[role="dialog"] [role="textbox"][contenteditable="true"], [role="textbox"][contenteditable="true"]';
+    const editor = await waitForSelector(editorSel, 10000);
+    if (!editor) {
+        showMetrixToast(`⚠️ 未检测到 ${label} 发帖输入框，请确认已登录并打开编辑框`, 5500);
+        chrome.runtime.sendMessage({
+            type: "PLATFORM_DRAFT_STATUS",
+            data: { platform: platformId, status: "failed", error: `未找到 ${label} 编辑器` }
+        });
+        return;
+    }
+
+    const rawPlain = (article.digest || article.markdown || "").replace(/!\[[^\]]*\]\([^)]+\)/g, "").replace(/[#*_`>]/g, "").trim();
+    const limit = platformId === "x" ? 130 : 480;
+    const text = Array.from([article.title, rawPlain].filter(Boolean).join("\n\n")).slice(0, limit).join("");
+    const fullText = [article.title, (article.markdown || "").trim()].filter(Boolean).join("\n\n");
+
+    const selectAll = () => {
+        editor.click?.();
+        editor.focus?.();
+        try {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand("selectAll", false, null);
+        } catch (e) {}
+    };
+
+    if ((editor.textContent || "").trim()) {
+        selectAll();
+        try { document.execCommand("delete", false, null); } catch (e) {}
+        await new Promise(r => setTimeout(r, 80));
+    } else {
+        selectAll();
+        await new Promise(r => setTimeout(r, 80));
+    }
+
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    editor.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt }));
+    await new Promise(r => setTimeout(r, 250));
+
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const probe = norm(text).slice(0, Math.min(18, norm(text).length));
+    if (!probe || !norm(editor.textContent).includes(probe)) {
+        selectAll();
+        try { document.execCommand("insertText", false, text); } catch (e) {}
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    const landed = Boolean(probe && norm(editor.textContent).includes(probe));
+    if (!landed) {
+        showMetrixToast(`⚠️ ${label} 降级写入未生效，请手动粘贴`, 5500);
+        chrome.runtime.sendMessage({
+            type: "PLATFORM_DRAFT_STATUS",
+            data: { platform: platformId, status: "failed", error: `${label} 编辑器未接受粘贴` }
+        });
+        return;
+    }
+
+    notifySocialInjectionSuccess(platformId, {
+        truncated: fullText.length > text.length,
+        charCount: Array.from(text).length,
+        mediaAttached: 0,
+        fullText
+    });
+    chrome.runtime.sendMessage({
+        type: "PLATFORM_DRAFT_STATUS",
+        data: { platform: platformId, status: "success", draftUrl: location.href }
     });
 }

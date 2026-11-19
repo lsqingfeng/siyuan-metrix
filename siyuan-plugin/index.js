@@ -1529,7 +1529,7 @@ class MetrixPlugin extends siyuan.Plugin {
     }
 
     async onload() {
-        console.log("[Metrix] Starting Metrix Commercial Plugin v2.1.3...");
+        console.log("[Metrix] Starting Metrix Commercial Plugin v2.2.0...");
         await this.loadConfig();
 
         // 启动时复核授权签名状态
@@ -1729,7 +1729,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 <div class="metrix-settings-section">
                     <div class="metrix-section-title">🧩 30 秒安装「Metrix 浏览器发布伴侣」</div>
                     <div style="line-height: 1.7; color: var(--b3-theme-on-surface);">
-                        Metrix 采用<strong>零封号风险架构</strong>：不伪造无头爬虫，直接复用您日常 Chrome / Edge 浏览器已登录的账号会话写入草稿箱。首次使用只需安装一次伴侣扩展：
+                        Metrix 采用<strong>零封号风险架构</strong>：不伪造无头爬虫，直接复用您日常 Chrome / Edge 浏览器已登录的账号会话写入草稿箱（涵盖知乎、掘金、CSDN、头条、B站、飞书及海外 X / Threads）。首次使用只需安装一次伴侣扩展：
                     </div>
                     <ol style="margin: 4px 0 8px 18px; padding: 0; line-height: 1.85; color: var(--b3-theme-on-surface);">
                         <li>点击下方按钮，将内置的 <code>metrix-companion.zip</code> 导出到您的电脑并<strong>解压为文件夹</strong>；</li>
@@ -2050,7 +2050,7 @@ class MetrixPlugin extends siyuan.Plugin {
                 <div style="text-align:center;">
                     <h2 style="margin:0 0 6px 0; font-size:20px; color:var(--b3-theme-on-surface);">💎 升级 Metrix 矩阵分发专业版</h2>
                     <div style="font-size:13px; color:var(--b3-theme-on-surface-light);">
-                        一次买断 · 终身授权 · 公众号 API 直连 + 全网平台一键并发齐发
+                        一次买断 · 终身授权 · 公众号 API 直连 + 海内外 9 大平台一键并发齐发
                     </div>
                 </div>
 
@@ -2060,10 +2060,10 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div class="metrix-plan-price">¥0 <span style="font-size:12px; font-weight:normal; color:var(--b3-theme-on-surface-light);">永久免费</span></div>
                         <ul class="metrix-feature-list">
                             <li>✔ 单次发布 1 个平台（每日限 3 次）</li>
-                            <li>✔ 支持微信公众号草稿直连 & 6 大社区</li>
+                            <li>✔ 支持微信公众号直连 & 8 大海内外社区</li>
                             <li>✔ 微信公众号极客蓝内联高亮排版</li>
                             <li>✔ 原生 Canvas 2.35:1 封面渲染</li>
-                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 全平台 (7+) 不限次数一键齐发</li>
+                            <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 全网 9 大平台不限次数一键齐发</li>
                             <li style="color:var(--b3-theme-on-surface-light); opacity:0.6;">✖ 专栏胶囊标语与云图床深度定制</li>
                         </ul>
                     </div>
@@ -2073,8 +2073,8 @@ class MetrixPlugin extends siyuan.Plugin {
                         <div class="metrix-plan-title">💎 终身专业版 (Lifetime)</div>
                         <div class="metrix-plan-price gold">¥49 <span style="font-size:12px; font-weight:normal; color:var(--b3-theme-on-surface-light);">永久买断 / 团队版 ¥129</span></div>
                         <ul class="metrix-feature-list">
-                            <li>✔ <strong>全网 7 大平台不限次数一键并发齐发</strong></li>
-                            <li>✔ <strong>微信公众号 AppID 直连 + 社区免密同步</strong></li>
+                            <li>✔ <strong>全网 9 大平台（含 X / Threads）不限次数一键并发齐发</strong></li>
+                            <li>✔ <strong>微信公众号 AppID 直连 + 海内外社区免密同步</strong></li>
                             <li>✔ <strong>专栏胶囊标语 & 品牌作者深度定制</strong></li>
                             <li>✔ <strong>PicGo / ImgBB / GitHub 图床极速直连</strong></li>
                             <li>✔ <strong>Ed25519 纯离线非对称验签，100% 隐私安全</strong></li>
@@ -2216,7 +2216,7 @@ class MetrixPlugin extends siyuan.Plugin {
 
                     <div class="metrix-right">
                         <div class="metrix-field-label">
-                            目标平台${!isPro ? ` <span id="metrix-label-upsell" style="font-weight:600; color:#d97706; cursor:pointer;" title="点击查看 Pro 终身版并发权益">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次 · <span style="text-decoration:underline;">解锁 7 平台齐发</span>)</span>` : '（公众号直连 + 浏览器会话复用）'}
+                            目标平台${!isPro ? ` <span id="metrix-label-upsell" style="font-weight:600; color:#d97706; cursor:pointer;" title="点击查看 Pro 终身版并发权益">(免费版单次选 1 平台 · 每日 ${FREE_DAILY_LIMIT} 次 · <span style="text-decoration:underline;">解锁 9 平台齐发</span>)</span>` : '（公众号直连 + 海内外浏览器会话复用）'}
                         </div>
                         <div class="metrix-platforms-grid">
                             <label class="metrix-platform-item ${checkWechatDefault ? 'active' : ''}" data-platform="wechat" style="grid-column: 1 / -1;">
@@ -2255,14 +2255,24 @@ class MetrixPlugin extends siyuan.Plugin {
                                 <span>飞书云文档</span>
                                 <span class="metrix-platform-status" id="status-feishu">⚪ 待发布</span>
                             </label>
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="x" title="停在 X 编辑框待手动点击 Post，绝不自动发送">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="x" style="accent-color: #0f172a;" />
+                                <span>𝕏 X (Twitter)</span>
+                                <span class="metrix-platform-status" id="status-x">⚪ 待发布</span>
+                            </label>
+                            <label class="metrix-platform-item ${checkOtherDefault ? 'active' : ''}" data-platform="threads" title="唤起 Threads 发帖框写入正文与配图，停在待确认态">
+                                <input type="checkbox" ${checkOtherDefault ? 'checked' : ''} value="threads" style="accent-color: #111827;" />
+                                <span>🌀 Threads</span>
+                                <span class="metrix-platform-status" id="status-threads">⚪ 待发布</span>
+                            </label>
                         </div>
                         ${!isPro
                             ? `<div id="metrix-multi-pro-upsell" style="margin-top: auto; padding: 11px 12px; background: rgba(245, 158, 11, 0.08); border-radius: 8px; border: 1px solid rgba(245, 158, 11, 0.32); font-size: 12px; line-height: 1.55; color: var(--b3-theme-on-surface); display:flex; align-items:center; justify-content:space-between; gap:10px; transition: all 0.2s;">
-                                <div id="metrix-multi-pro-upsell-text">💡 <strong>单平台免费体验中</strong>：支持全平台逐个分发；升级 <strong>Pro 终身版 (¥49)</strong> 解锁 <strong>7 大平台一键并发齐发</strong>与云图床。</div>
+                                <div id="metrix-multi-pro-upsell-text">💡 <strong>单平台免费体验中</strong>：支持全平台逐个分发；升级 <strong>Pro 终身版 (¥49)</strong> 解锁 <strong>9 大平台（含海外 X / Threads）一键齐发</strong>与云图床。</div>
                                 <button id="metrix-inline-upsell-btn" class="metrix-top-btn metrix-top-btn-pro" style="white-space:nowrap; flex-shrink:0; padding:6px 11px;">💎 查看 Pro</button>
                                </div>`
                             : `<div style="margin-top: auto; padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 12px; line-height: 1.6; color: var(--b3-theme-on-surface);">
-                                💡 <strong>双引擎直推</strong>：<strong>微信公众号</strong>通过「⚙️ 设置」配置 AppID &amp; AppSecret 免浏览器直推官方草稿箱；其余社区调起「🧩 伴侣扩展」免密码同步。
+                                💡 <strong>海内外 9 平台双引擎</strong>：<strong>微信公众号</strong>通过「⚙️ 设置」直推草稿箱；其余社区（含海外 <strong>X / Threads</strong>，仅填充不自动发送）调起「🧩 伴侣扩展」免密同步。
                                </div>`
                         }
                     </div>
@@ -2279,7 +2289,7 @@ class MetrixPlugin extends siyuan.Plugin {
             title: "",
             content: dialogContent,
             width: "820px",
-            height: "600px"
+            height: "640px"
         });
 
         const updateCoverLive = () => {
@@ -2362,7 +2372,7 @@ class MetrixPlugin extends siyuan.Plugin {
                                 if (upsellBox && upsellText) {
                                     upsellBox.style.background = "rgba(245, 158, 11, 0.16)";
                                     upsellBox.style.borderColor = "#f59e0b";
-                                    upsellText.innerHTML = `⚡ <strong>已切换为「${this.escapeHtml(platformName)}」</strong>：同时勾选多平台并发齐发需解锁 <strong>Pro 终身版 (¥49)</strong>，1 秒同时写入 7 平台草稿箱。`;
+                                    upsellText.innerHTML = `⚡ <strong>已切换为「${this.escapeHtml(platformName)}」</strong>：同时勾选多平台并发齐发需解锁 <strong>Pro 终身版 (¥49)</strong>，1 秒同时写入 9 平台草稿箱。`;
                                     if (upsellBtn) upsellBtn.textContent = "💎 立即解锁齐发";
                                 }
                             }
@@ -2435,7 +2445,7 @@ class MetrixPlugin extends siyuan.Plugin {
 
         // 1. 免费版每日使用次数拦截（每日限 3 次）
         if (!isPro && this.getRemainingFreeRuns() <= 0) {
-            const upgradeNow = confirm(`💡【Metrix 今日免费额度已用完】\n\n免费社区版每日支持发布 ${FREE_DAILY_LIMIT} 次（明日 00:00 自动恢复）。\n\n点击【确定】立即升级终身专业版（¥49 一次买断，永久解锁不限次数 + 全网 7 大平台一键齐发）！`);
+            const upgradeNow = confirm(`💡【Metrix 今日免费额度已用完】\n\n免费社区版每日支持发布 ${FREE_DAILY_LIMIT} 次（明日 00:00 自动恢复）。\n\n点击【确定】立即升级终身专业版（¥49 一次买断，永久解锁不限次数 + 海内外 9 大平台一键齐发）！`);
             if (upgradeNow) {
                 this.openLicenseDialog();
             }
@@ -2445,7 +2455,7 @@ class MetrixPlugin extends siyuan.Plugin {
         // 2. 免费版单次发布平台数拦截（每次限 1 个平台）
         let targetPlatforms = checkedPlatforms;
         if (!isPro && targetPlatforms.length > FREE_MAX_PLATFORMS) {
-            const shouldUpgrade = confirm(`💡【Metrix 免费版限制提示】\n\n免费版每次仅支持发布 ${FREE_MAX_PLATFORMS} 个平台（当前已选 ${targetPlatforms.length} 个，每日限 ${FREE_DAILY_LIMIT} 次）。\n\n点击【确定】立即升级/激活终身专业版（¥49 一次买断，解锁全网 7 大平台并发齐发），点击【取消】仅发布首个选中平台。`);
+            const shouldUpgrade = confirm(`💡【Metrix 免费版限制提示】\n\n免费版每次仅支持发布 ${FREE_MAX_PLATFORMS} 个平台（当前已选 ${targetPlatforms.length} 个，每日限 ${FREE_DAILY_LIMIT} 次）。\n\n点击【确定】立即升级/激活终身专业版（¥49 一次买断，解锁海内外 9 大平台并发齐发），点击【取消】仅发布首个选中平台。`);
             if (shouldUpgrade) {
                 this.openLicenseDialog();
                 return;

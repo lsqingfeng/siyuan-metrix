@@ -8,7 +8,9 @@ const PLATFORM_URLS = {
     csdn: "https://editor.csdn.net/md/",
     toutiao: "https://mp.toutiao.com/profile_v4/graphic/publish",
     bilibili: "https://member.bilibili.com/york/read-editor",
-    feishu: "https://feishu.cn/drive/me/"
+    feishu: "https://feishu.cn/drive/me/",
+    x: "https://x.com/compose/post",
+    threads: "https://www.threads.com/"
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -121,7 +123,7 @@ async function handleBridgeHandoff(handoff) {
 }
 
 async function handlePlatformStatus(data) {
-    const { platform, status, draftUrl, error } = data;
+    const { platform, status, draftUrl, error, editor, contentLength } = data;
     console.log(`[Metrix Worker] 收到平台状态回传: ${platform} -> ${status}`);
 
     const storage = await chrome.storage.local.get("currentTask");
@@ -140,6 +142,8 @@ async function handlePlatformStatus(data) {
                 platform,
                 status,
                 draftUrl,
+                editor,
+                contentLength,
                 error
             })
         });
@@ -672,9 +676,18 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         const imgNodes = Array.from(doc.querySelectorAll("img"));
         let assetCursor = 0;
 
+        const isBiliAssetUrl = (rawUrl) => {
+            try {
+                const h = new URL(rawUrl, location.origin).hostname.toLowerCase();
+                return h === "hdslb.com" || h.endsWith(".hdslb.com") || h === "bilibili.com" || h.endsWith(".bilibili.com");
+            } catch (e) {
+                return false;
+            }
+        };
+
         for (const imgEl of imgNodes) {
             const src = imgEl.getAttribute("src") || "";
-            if (src.includes("hdslb.com") || src.includes("bilibili.com")) continue;
+            if (isBiliAssetUrl(src)) continue;
 
             let fileBlob = null;
             let fileName = "metrix_img.png";
@@ -717,57 +730,32 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
         }
 
         const biliHtml = doc.body.innerHTML;
+        const normalizeBiliText = (s) => (s || "").replace(/\s+/g, " ").trim();
+        const expectedBiliText = normalizeBiliText(doc.body.textContent || "");
+        const plainWords = expectedBiliText.length;
+        const headProbe = expectedBiliText.slice(0, Math.min(20, expectedBiliText.length));
+        const tailProbe = expectedBiliText.length > 36 ? expectedBiliText.slice(-12) : "";
+        const expectedImgCount = doc.querySelectorAll("img").length;
 
-        // 优先走 B站官方专栏草稿保存接口（支持标题、正文、摘要、2.35:1 封面与 BFS 图片一次性落库）
-        if (biliJct) {
-            try {
-                let bannerUrl = "";
-                if (meta.coverBase64) {
-                    const coverFile = base64ToFile(meta.coverBase64, "cover.png", "image/png");
-                    if (coverFile) {
-                        bannerUrl = (await uploadBlobToBfs(coverFile, "cover.png")) || "";
-                    }
-                }
-                const plainWords = (doc.body.textContent || "").trim().length;
-                const draftFd = new FormData();
-                draftFd.append("title", biliTitle);
-                draftFd.append("content", biliHtml);
-                draftFd.append("summary", meta.digest || "");
-                draftFd.append("banner_url", bannerUrl);
-                draftFd.append("words", String(plainWords));
-                draftFd.append("category", "17");
-                draftFd.append("list_id", "0");
-                draftFd.append("tid", "0");
-                draftFd.append("reprint", "0");
-                draftFd.append("tags", Array.isArray(meta.tags) && meta.tags.length ? meta.tags.join(",") : "技术,人工智能");
-                draftFd.append("image_urls", "");
-                draftFd.append("origin_image_urls", "");
-                draftFd.append("dynamic_intro", meta.digest || "");
-                draftFd.append("media_id", "0");
-                draftFd.append("spoiler", "0");
-                draftFd.append("original", "1");
-                draftFd.append("top_video_bvid", "");
-                draftFd.append("csrf", biliJct);
+        const isBiliContentVerified = (el) => {
+            const rawTxt = el?.textContent || window.editor?.getText?.() || "";
+            const normTxt = normalizeBiliText(rawTxt);
+            const textOk = plainWords === 0 || (
+                Boolean(headProbe && normTxt.includes(headProbe)) &&
+                (!tailProbe || normTxt.includes(tailProbe)) &&
+                normTxt.length >= Math.floor(plainWords * 0.6)
+            );
+            const actualImgs = el ? el.querySelectorAll("img").length : 0;
+            const imgOk = expectedImgCount === 0 || actualImgs >= expectedImgCount;
+            return textOk && imgOk && (normTxt.length > 0 || actualImgs > 0);
+        };
 
-                const draftResp = await fetch("https://api.bilibili.com/x/article/creative/draft/addupdate", {
-                    method: "POST",
-                    body: draftFd,
-                    credentials: "include"
-                });
-                if (draftResp.ok) {
-                    const draftJson = await draftResp.json();
-                    if (draftJson.code === 0 && draftJson.data?.aid !== undefined) {
-                        const draftUrl = `https://member.bilibili.com/york/read-editor?aid=${encodeURIComponent(String(draftJson.data.aid))}`;
-                        setTimeout(() => { location.replace(draftUrl); }, 120);
-                        return { ok: true, editor: "bilibili-draft-api", draftUrl };
-                    }
-                }
-            } catch (apiErr) {
-                console.warn("[Metrix] B站官方草稿 API 异常，自动切换编辑器粘贴兜底:", apiErr);
-            }
+        if (!biliJct || location.hostname.includes("passport.bilibili.com")) {
+            return { ok: false, error: "B站尚未登录，请先在当前 Chrome 登录 B站账号后重试" };
         }
 
-        let titleSelectors = [
+        const titleSelectors = [
+            "textarea.title-input__inner",
             "textarea[placeholder*='请输入标题']",
             "textarea[placeholder*='标题']",
             "input[placeholder*='请输入标题']",
@@ -781,34 +769,193 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             "input.title-input"
         ];
 
+        // 优先直接注入新版 B站专栏编辑器 (sunflower-read-editor: TipTap window.editor / ProseMirror) 并触发「保存为草稿」生成原生 opus 草稿
         let deadline = Date.now() + 15000;
         let editorEl = null;
         for (; Date.now() < deadline;) {
+            if (location.hostname.includes("passport.bilibili.com")) {
+                return { ok: false, error: "B站尚未登录，请先在当前 Chrome 登录 B站账号后重试" };
+            }
             fillInputs(titleSelectors, biliTitle);
-            editorEl = document.querySelector(".ProseMirror[contenteditable='true'], div[contenteditable='true'][role='textbox'], div[contenteditable='true'], .article-content div[contenteditable='true']");
-            if (editorEl) break;
+            editorEl = document.querySelector(".editor-container .ProseMirror[contenteditable='true'], .ProseMirror[contenteditable='true'], div[contenteditable='true'][role='textbox'], div[contenteditable='true'], .article-content div[contenteditable='true']");
+            if (editorEl || (window.editor && window.editor.commands && typeof window.editor.commands.setContent === "function")) {
+                break;
+            }
             await sleep(250);
         }
 
-        if (editorEl) {
-            editorEl.focus();
-            try {
-                let sel = window.getSelection();
-                let range = document.createRange();
-                range.selectNodeContents(editorEl);
-                sel.removeAllRanges();
-                sel.addRange(range);
-            } catch (err) {}
+        if (editorEl || (window.editor && window.editor.commands && typeof window.editor.commands.setContent === "function")) {
+            let usedTiptap = false;
 
-            let dt = new DataTransfer();
-            dt.setData("text/html", biliHtml);
-            dt.setData("text/plain", markdown);
-            let pasteEvt = new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt });
-            editorEl.dispatchEvent(pasteEvt);
-            await sleep(400);
+            if (window.editor && window.editor.commands && typeof window.editor.commands.setContent === "function") {
+                try {
+                    window.editor.commands.setContent(biliHtml, true);
+                    window.editor.commands.updateImageCache?.();
+                    usedTiptap = true;
+                    await sleep(400);
+                } catch (tipErr) {
+                    console.warn("[Metrix] B站 TipTap setContent 异常，降级 ProseMirror 粘贴:", tipErr);
+                    usedTiptap = false;
+                }
+            }
+
+            if (!editorEl) {
+                editorEl = document.querySelector(".editor-container .ProseMirror[contenteditable='true'], .ProseMirror[contenteditable='true'], div[contenteditable='true']");
+            }
+
+            if (editorEl && !isBiliContentVerified(editorEl)) {
+                editorEl.click?.();
+                editorEl.focus();
+                try {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(editorEl);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand("selectAll", false, null);
+                    document.execCommand("delete", false, null);
+                } catch (err) {}
+                await sleep(100);
+
+                const dt = new DataTransfer();
+                dt.setData("text/html", biliHtml);
+                dt.setData("text/plain", markdown);
+                editorEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt }));
+                await sleep(450);
+                usedTiptap = false;
+            }
+
             fillInputs(titleSelectors, biliTitle);
-            return { ok: true, editor: "bilibili-prosemirror" };
+
+            const renderedLen = (editorEl?.textContent || window.editor?.getText?.() || "").trim().length;
+            if (isBiliContentVerified(editorEl)) {
+                // 仅显式点击「保存为草稿」并确认保存成功反馈（绝不点击「发布」按钮，不用快捷键盲兜底）
+                let saveBtn = null;
+                const btnDeadline = Date.now() + 1500;
+                while (Date.now() < btnDeadline) {
+                    const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+                    saveBtn = btns.find(b => {
+                        const txt = (b.innerText || b.textContent || "").trim();
+                        return txt === "保存为草稿" || txt === "存草稿" || txt === "保存草稿";
+                    });
+                    if (saveBtn && !saveBtn.disabled) break;
+                    await sleep(150);
+                }
+                if (!saveBtn || saveBtn.disabled) {
+                    return { ok: false, error: "B站正文已填入编辑框，但未找到可用的「保存为草稿」按钮，请手动点击保存", draftUrl: location.href, contentLength: renderedLen };
+                }
+
+                const beforeAid = new URLSearchParams(location.search).get("aid") || "";
+                saveBtn.click();
+                let saveConfirmed = false;
+                let saveFailedMsg = "";
+                const saveWaitEnd = Date.now() + 3500;
+                while (Date.now() < saveWaitEnd) {
+                    const tipEl = document.querySelector(".save-tip");
+                    const tipText = (tipEl?.textContent || "").trim();
+                    const afterAid = new URLSearchParams(location.search).get("aid") || "";
+                    if (tipText.includes("失败") || tipEl?.classList?.contains("save-fail")) {
+                        saveFailedMsg = tipText || "B站保存草稿返回失败提示";
+                        break;
+                    }
+                    if (tipText.includes("保存成功") || (afterAid && afterAid !== beforeAid)) {
+                        saveConfirmed = true;
+                        await sleep(250);
+                        break;
+                    }
+                    await sleep(200);
+                }
+                if (saveFailedMsg || !saveConfirmed) {
+                    return {
+                        ok: false,
+                        error: saveFailedMsg || "B站正文已填入编辑框，但未收到「保存成功」落库确认，请手动点击保存草稿",
+                        draftUrl: location.href,
+                        contentLength: renderedLen
+                    };
+                }
+
+                return {
+                    ok: true,
+                    editor: usedTiptap ? "bilibili-tiptap" : "bilibili-prosemirror",
+                    draftUrl: location.href,
+                    contentLength: renderedLen
+                };
+            }
         }
+
+        // 兜底通道：仅当编辑器未挂载或 DOM 写入失败时才走接口保存（使用 x-www-form-urlencoded + draft/view 节点校验）
+        try {
+            let bannerUrl = "";
+            if (meta.coverBase64) {
+                const coverFile = base64ToFile(meta.coverBase64, "cover.png", "image/png");
+                if (coverFile) {
+                    bannerUrl = (await uploadBlobToBfs(coverFile, "cover.png")) || "";
+                }
+            }
+            const formParams = new URLSearchParams();
+            formParams.append("title", biliTitle);
+            formParams.append("content", biliHtml);
+            formParams.append("summary", meta.digest || "");
+            formParams.append("banner_url", bannerUrl);
+            formParams.append("words", String(plainWords));
+            formParams.append("category", "17");
+            formParams.append("list_id", "0");
+            formParams.append("tid", "0");
+            formParams.append("reprint", "0");
+            formParams.append("tags", Array.isArray(meta.tags) && meta.tags.length ? meta.tags.join(",") : "技术,人工智能");
+            formParams.append("image_urls", "");
+            formParams.append("origin_image_urls", "");
+            formParams.append("dynamic_intro", meta.digest || "");
+            formParams.append("media_id", "0");
+            formParams.append("spoiler", "0");
+            formParams.append("original", "1");
+            formParams.append("top_video_bvid", "");
+            formParams.append("csrf", biliJct);
+
+            const draftResp = await fetch("https://api.bilibili.com/x/article/creative/draft/addupdate", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+                body: formParams.toString(),
+                credentials: "include"
+            });
+            if (draftResp.ok) {
+                const draftJson = await draftResp.json();
+                if (draftJson.code === 0 && draftJson.data?.aid !== undefined) {
+                    const aid = String(draftJson.data.aid);
+                    let verifiedNonEmpty = false;
+                    try {
+                        const viewResp = await fetch(`https://api.bilibili.com/x/dynamic/feed/article/draft/view?article_id=${encodeURIComponent(aid)}`, {
+                            credentials: "include"
+                        });
+                        if (viewResp.ok) {
+                            const viewJson = await viewResp.json();
+                            const draft = viewJson?.data?.draft;
+                            const opusParas = draft?.opus?.content?.paragraphs;
+                            const hasOpus = Array.isArray(opusParas) && opusParas.some(p =>
+                                (Array.isArray(p?.text?.nodes) && p.text.nodes.some(n => (n?.word?.words || "").trim())) ||
+                                p?.pic || p?.code
+                            );
+                            const legacyText = draft?.content
+                                ? normalizeBiliText(new DOMParser().parseFromString(String(draft.content), "text/html").body.textContent || "")
+                                : "";
+                            const hasLegacyHtml = plainWords === 0 || (Boolean(headProbe && legacyText.includes(headProbe)) && legacyText.length >= Math.floor(plainWords * 0.6));
+                            verifiedNonEmpty = hasOpus || hasLegacyHtml;
+                        }
+                    } catch (e) {}
+
+                    const draftUrl = `https://member.bilibili.com/york/read-editor?aid=${encodeURIComponent(aid)}`;
+                    setTimeout(() => { location.replace(draftUrl); }, 120);
+                    if (!verifiedNonEmpty && (plainWords > 0 || expectedImgCount > 0)) {
+                        return { ok: false, error: `B站接口返回 aid=${aid} 但 draft/view 有效正文节点校验为空`, draftUrl };
+                    }
+                    return { ok: true, editor: "bilibili-draft-api", draftUrl };
+                }
+            }
+        } catch (apiErr) {
+            console.warn("[Metrix] B站草稿兜底 API 异常:", apiErr);
+        }
+
+        return { ok: false, error: "B站专栏编辑器未就绪或正文写入失败，请刷新页面后重试" };
     }
 
     // 5. 飞书云文档 (https://*.feishu.cn/docx/*)
@@ -898,6 +1045,509 @@ async function fillPlatformEditorInPage(platformId, title, html, markdown, asset
             let pasteEvt = new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true, clipboardData: dt });
             bodyEditor.dispatchEvent(pasteEvt);
             return { ok: true, editor: "feishu-docx" };
+        }
+    }
+
+    // 6. 海外短内容双平台：X (Twitter) & Threads（智能摘要 + 配图挂载 + 绝不自动点击发布防封号）
+    if (platformId === "x" || platformId === "threads") {
+        const URL_REGEX = /https?:\/\/[^\s<>()[\]{}"'，。！？；：、]+/g;
+
+        const splitGraphemes = (str) => {
+            if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+                const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+                return Array.from(seg.segment(str || ""), s => s.segment);
+            }
+            return Array.from(str || "");
+        };
+
+        const cleanMarkdownForSocial = (rawMd, articleTitle) => {
+            let text = (rawMd || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+            text = text.replace(/^---\s*\n[\s\S]*?\n---\s*\n/, "");
+            text = text.replace(/!\[[^\]]*\]\([^)]+\)\n*/g, "");
+            text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)");
+            text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+            text = text.replace(/```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g, "$1");
+            text = text.replace(/^#{1,6}\s+/gm, "");
+            text = text.replace(/^>\s?/gm, "");
+            text = text.replace(/(\*\*|__|~~|`)/g, "");
+            text = text.replace(/\u200b/g, "");
+
+            const normTitle = (articleTitle || "").replace(/\s+/g, " ").trim();
+            const lines = text.split("\n").map(l => l.trimEnd());
+            const filtered = [];
+            for (const line of lines) {
+                const t = line.trim();
+                if (/^(?:作者|定位)[：:]/.test(t)) continue;
+                if (/^💡\s*关注【/.test(t) || /^欢迎在评论区探讨/.test(t)) continue;
+                if (filtered.length === 0 && normTitle && t.replace(/\s+/g, " ") === normTitle) continue;
+                filtered.push(line.replace(/^文章概览[：:]\s*/, ""));
+            }
+            return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+        };
+
+        const measureSocialText = (str, weighted) => {
+            const s = str || "";
+            if (!weighted) return splitGraphemes(s).length;
+            const urls = s.match(URL_REGEX) || [];
+            const withoutUrls = s.replace(URL_REGEX, "");
+            let score = urls.length * 23;
+            for (const grapheme of splitGraphemes(withoutUrls)) {
+                const cp = grapheme.codePointAt(0) || 0;
+                const isSingleAscii = grapheme.length === 1 && cp <= 0x024F;
+                score += isSingleAscii ? 1 : 2;
+            }
+            return score;
+        };
+
+        const trimToSocialLimit = (text, maxUnits, weighted) => {
+            if (measureSocialText(text, weighted) <= maxUnits) return text;
+            const ellipsis = "…";
+            const budget = Math.max(10, maxUnits - measureSocialText(ellipsis, weighted));
+
+            // 将 URL 视为不可切分原子 Token，避免截断破坏链接
+            const tokens = [];
+            let cursor = 0;
+            for (const m of text.matchAll(URL_REGEX)) {
+                if (m.index > cursor) {
+                    tokens.push(...splitGraphemes(text.slice(cursor, m.index)).map(g => ({ text: g, isUrl: false })));
+                }
+                tokens.push({ text: m[0], isUrl: true });
+                cursor = m.index + m[0].length;
+            }
+            if (cursor < text.length) {
+                tokens.push(...splitGraphemes(text.slice(cursor)).map(g => ({ text: g, isUrl: false })));
+            }
+
+            let acc = "";
+            for (const tok of tokens) {
+                const next = acc + tok.text;
+                if (measureSocialText(next, weighted) > budget) {
+                    // 若是超长 URL 独占且当前内容为空，跳过该 URL（完整全文已备份剪贴板）避免只剩省略号
+                    if (tok.isUrl && !acc) continue;
+                    break;
+                }
+                acc = next;
+            }
+            if (!acc) {
+                for (const g of splitGraphemes(text)) {
+                    if (measureSocialText(acc + g, weighted) > budget) break;
+                    acc += g;
+                }
+            }
+
+            const urlSpans = [...acc.matchAll(URL_REGEX)].map(m => [m.index, m.index + m[0].length]);
+            const minBreakIdx = Math.floor(acc.length * 0.6);
+            const safeMatches = [...acc.matchAll(/[。！？.!?\n]/g)].filter(m =>
+                !urlSpans.some(([s, e]) => m.index >= s && m.index < e)
+            );
+            const lastBreak = safeMatches.length ? safeMatches[safeMatches.length - 1].index : -1;
+            let out = lastBreak >= minBreakIdx
+                ? acc.slice(0, lastBreak + 1).trimEnd() + ellipsis
+                : acc.replace(/[\s,，;；:：、\-]+$/u, "").trimEnd() + ellipsis;
+
+            // 二次复验确保即使边界字符略超也能严格落在限额内
+            const outTokens = splitGraphemes(out.slice(0, -1));
+            while (outTokens.length > 0 && measureSocialText(outTokens.join("") + ellipsis, weighted) > maxUnits) {
+                outTokens.pop();
+            }
+            const finalCore = outTokens.join("").trimEnd();
+            return finalCore ? finalCore + ellipsis : ellipsis;
+        };
+
+        const buildSocialPostPayload = (articleTitle, rawMarkdown, digest, opts) => {
+            const { maxChars, weighted } = opts;
+            const cleanTitle = (articleTitle || "").trim();
+            const cleanDigest = cleanMarkdownForSocial(digest || "", cleanTitle);
+            let cleanBody = cleanMarkdownForSocial(rawMarkdown || "", cleanTitle);
+            const fullText = cleanTitle && cleanBody && !cleanBody.startsWith(cleanTitle)
+                ? `${cleanTitle}\n\n${cleanBody}`
+                : (cleanBody || cleanTitle);
+
+            if (measureSocialText(fullText, weighted) <= maxChars) {
+                return {
+                    postText: fullText,
+                    fullText,
+                    truncated: false,
+                    charCount: splitGraphemes(fullText).length,
+                    weightedCount: measureSocialText(fullText, true)
+                };
+            }
+
+            // 避免 Threads 拼接摘要后与正文首段「文章概览」重复
+            if (cleanDigest && cleanBody) {
+                const paras = cleanBody.split(/\n{2,}/);
+                const firstPara = (paras[0] || "").trim();
+                const overlapPrefix = cleanDigest.slice(0, Math.min(20, cleanDigest.length));
+                if (firstPara && overlapPrefix && (firstPara.includes(overlapPrefix) || cleanDigest.includes(firstPara.slice(0, 20)))) {
+                    cleanBody = paras.slice(1).join("\n\n").trim();
+                }
+            }
+
+            let candidate = "";
+            if (cleanDigest && cleanTitle) {
+                if (!weighted && cleanBody) {
+                    candidate = `${cleanTitle}\n\n${cleanDigest}\n\n${cleanBody}`;
+                } else {
+                    candidate = `${cleanTitle}\n\n${cleanDigest}`;
+                }
+            } else {
+                candidate = fullText;
+            }
+            const postText = trimToSocialLimit(candidate, maxChars, weighted);
+            return {
+                postText,
+                fullText,
+                truncated: true,
+                charCount: splitGraphemes(postText).length,
+                weightedCount: measureSocialText(postText, true)
+            };
+        };
+
+        const collectSocialImageFiles = (assetsList, coverB64, maxImages = 4) => {
+            const files = [];
+            if (Array.isArray(assetsList)) {
+                for (let i = 0; i < assetsList.length && files.length < maxImages; i++) {
+                    const item = assetsList[i];
+                    if (item && item.base64) {
+                        const f = base64ToFile(item.base64, item.filename || `metrix_img_${i + 1}.png`, item.mimeType || "image/png");
+                        if (f) files.push(f);
+                    }
+                }
+            }
+            if (files.length === 0 && coverB64) {
+                const coverFile = base64ToFile(coverB64, "metrix_cover.png", "image/png");
+                if (coverFile) files.push(coverFile);
+            }
+            return files;
+        };
+
+        const injectPlainTextToRichEditor = async (editorEl, postText) => {
+            const normalizeWs = (s) => (s || "").replace(/\s+/g, " ").trim();
+            const normExpected = normalizeWs(postText);
+            const headProbe = normExpected.slice(0, Math.min(20, normExpected.length));
+            const tailProbe = normExpected.length > 36 ? normExpected.slice(-14) : "";
+            const isInjectedComplete = () => {
+                const cur = normalizeWs(editorEl.textContent);
+                return Boolean(headProbe && cur.includes(headProbe) && (!tailProbe || cur.includes(tailProbe)));
+            };
+
+            const selectAllEditor = () => {
+                editorEl.click?.();
+                editorEl.focus?.();
+                try {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(editorEl);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand("selectAll", false, null);
+                } catch (e) {}
+            };
+
+            // 若已有残留内容先清空，避免与旧草稿拼接
+            if ((editorEl.textContent || "").trim()) {
+                selectAllEditor();
+                try { document.execCommand("delete", false, null); } catch (e) {}
+                await sleep(100);
+            } else {
+                selectAllEditor();
+                await sleep(100);
+            }
+
+            // 首选 ClipboardEvent("paste")，原生契合 X Draft.js 与 Threads Lexical
+            const pasteDt = new DataTransfer();
+            pasteDt.setData("text/plain", postText);
+            pasteDt.setData("Text", postText);
+            editorEl.dispatchEvent(new ClipboardEvent("paste", {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                clipboardData: pasteDt
+            }));
+            await sleep(350);
+
+            if (!isInjectedComplete()) {
+                selectAllEditor();
+                try {
+                    document.execCommand("insertText", false, postText);
+                } catch (e) {}
+                await sleep(250);
+            }
+
+            if (!isInjectedComplete()) {
+                selectAllEditor();
+                try {
+                    editorEl.dispatchEvent(new InputEvent("beforeinput", {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: "insertText",
+                        data: postText
+                    }));
+                } catch (e) {}
+                await sleep(200);
+            }
+
+            return isInjectedComplete();
+        };
+
+        const attachMediaFilesToComposer = async (scopeEl, editorEl, mediaFiles, fileInputSelectors, previewSelectors) => {
+            if (!mediaFiles || mediaFiles.length === 0) return 0;
+            const queryTarget = scopeEl || document;
+            const countPreviews = () => {
+                const nodes = queryTarget.querySelectorAll(previewSelectors);
+                return nodes ? nodes.length : 0;
+            };
+            const beforeCount = countPreviews();
+
+            let fileInput = null;
+            for (const sel of fileInputSelectors) {
+                fileInput = queryTarget.querySelector(sel) || (scopeEl === document ? null : document.querySelector(sel));
+                if (fileInput) break;
+            }
+
+            if (fileInput) {
+                try {
+                    const dt = new DataTransfer();
+                    mediaFiles.forEach(f => dt.items.add(f));
+                    fileInput.files = dt.files;
+                    fileInput.dispatchEvent(new Event("input", { bubbles: true }));
+                    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+                    const deadline = Date.now() + 1800;
+                    while (Date.now() < deadline) {
+                        const curCount = countPreviews();
+                        if (curCount > beforeCount) {
+                            return Math.min(curCount - beforeCount, mediaFiles.length);
+                        }
+                        await sleep(150);
+                    }
+                } catch (e) {
+                    console.warn(`[Metrix-${platformId}] fileInput mount error:`, e);
+                }
+            }
+
+            // 确认 fileInput 未触发任何新增预览后再走 ClipboardEvent("paste") 降级粘贴首图
+            try {
+                const imgDt = new DataTransfer();
+                imgDt.items.add(mediaFiles[0]);
+                editorEl.focus?.();
+                editorEl.dispatchEvent(new ClipboardEvent("paste", {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: true,
+                    clipboardData: imgDt
+                }));
+                const deadline = Date.now() + 1000;
+                while (Date.now() < deadline) {
+                    const curCount = countPreviews();
+                    if (curCount > beforeCount) return 1;
+                    await sleep(150);
+                }
+            } catch (e) {
+                console.warn(`[Metrix-${platformId}] image paste mount error:`, e);
+            }
+            return 0;
+        };
+
+        if (platformId === "x") {
+            const findXEditor = () => {
+                const candidates = [
+                    '[data-testid="tweetTextarea_0"][contenteditable="true"]',
+                    '[data-testid="tweetTextarea_0"] [contenteditable="true"]',
+                    '[data-testid="tweetTextarea_0"] [role="textbox"]',
+                    '[data-testid="tweetTextarea_0RichTextInputContainer"] [contenteditable="true"]',
+                    'div[role="dialog"] [role="textbox"][contenteditable="true"]',
+                    '.public-DraftEditor-content[contenteditable="true"]',
+                    '[role="textbox"][contenteditable="true"]'
+                ];
+                for (const sel of candidates) {
+                    const el = document.querySelector(sel);
+                    if (el && isVisibleControl(el)) return el;
+                }
+                return null;
+            };
+
+            const isXLoginWall = () => {
+                if (location.pathname.includes("/login") || location.pathname.includes("/i/flow/login")) return true;
+                return Boolean(document.querySelector('[data-testid="loginButton"], input[autocomplete="username"]'));
+            };
+
+            let editorEl = null;
+            const startTs = Date.now();
+            const deadline = startTs + 15000;
+            while (Date.now() < deadline) {
+                editorEl = findXEditor();
+                if (editorEl) break;
+                if (isXLoginWall() && (Date.now() - startTs) > 4000) {
+                    return { ok: false, error: "X (Twitter) 尚未登录，请先在当前 Chrome 登录后重试" };
+                }
+                await sleep(250);
+            }
+
+            if (!editorEl) {
+                return {
+                    ok: false,
+                    error: isXLoginWall()
+                        ? "X (Twitter) 尚未登录，请先在当前 Chrome 登录后重试"
+                        : "未检测到 X 发帖编辑框 (tweetTextarea_0)"
+                };
+            }
+
+            const payload = buildSocialPostPayload(title, markdown, meta.digest || "", { maxChars: 275, weighted: true });
+            const textOk = await injectPlainTextToRichEditor(editorEl, payload.postText);
+            if (!textOk) {
+                return { ok: false, error: "X 发帖框写入失败，请刷新页面或手动粘贴" };
+            }
+
+            const mediaFiles = collectSocialImageFiles(assets, meta.coverBase64, 4);
+            const scopeEl = editorEl.closest('div[role="dialog"]') || editorEl.closest('[data-testid="primaryColumn"]') || document;
+            const mediaAttached = await attachMediaFilesToComposer(
+                scopeEl,
+                editorEl,
+                mediaFiles,
+                [
+                    'input[type="file"][data-testid="fileInput"]',
+                    'div[role="dialog"] input[type="file"][accept*="image"]',
+                    'input[type="file"][accept*="image"]'
+                ],
+                '[data-testid="attachments"] img, div[role="dialog"] img[src^="blob:"], [data-testid="removeMediaButton"]'
+            );
+
+            // 严禁点击 tweetButton / tweetButtonInline，安全停留在待发布确认态
+            return {
+                ok: true,
+                editor: "x-draftjs",
+                truncated: payload.truncated,
+                charCount: payload.charCount,
+                weightedCount: payload.weightedCount,
+                mediaAttached,
+                fullText: payload.fullText,
+                postText: payload.postText
+            };
+        }
+
+        if (platformId === "threads") {
+            const findThreadsEditor = () => {
+                const candidates = [
+                    'div[role="dialog"] [role="textbox"][contenteditable="true"]',
+                    'div[role="dialog"] div[contenteditable="true"]',
+                    '[role="textbox"][contenteditable="true"]',
+                    'div[contenteditable="true"][data-lexical-editor="true"]'
+                ];
+                for (const sel of candidates) {
+                    const nodes = Array.from(document.querySelectorAll(sel));
+                    for (const el of nodes) {
+                        if (!isVisibleControl(el)) continue;
+                        if (el.closest('[role="search"]')) continue;
+                        return el;
+                    }
+                }
+                return null;
+            };
+
+            const findThreadsCreateTrigger = () => {
+                const ariaSelectors = [
+                    '[aria-label="Create"]',
+                    '[aria-label="New thread"]',
+                    '[aria-label="创建"]',
+                    '[aria-label="发帖"]',
+                    '[aria-label="新建"]',
+                    '[aria-label="新串文"]',
+                    '[aria-label="建立"]',
+                    'a[href="/create"]',
+                    'a[href*="/create"]'
+                ];
+                for (const sel of ariaSelectors) {
+                    const el = document.querySelector(sel);
+                    if (!el) continue;
+                    const btn = el.closest('button, [role="button"], a') || el;
+                    if (isVisibleControl(btn)) return btn;
+                }
+                for (const svg of Array.from(document.querySelectorAll("svg[aria-label]"))) {
+                    const label = (svg.getAttribute("aria-label") || "").trim();
+                    if (/^(Create|New thread|创建|发帖|新建|新串文|建立)$/i.test(label)) {
+                        const btn = svg.closest('button, [role="button"], a');
+                        if (btn && isVisibleControl(btn)) return btn;
+                    }
+                }
+                for (const b of Array.from(document.querySelectorAll('button, [role="button"]'))) {
+                    if (!isVisibleControl(b)) continue;
+                    const txt = (b.innerText || b.textContent || "").trim();
+                    if (/^(What's new\??|Start a thread\.{0,3}|有什么新鲜事[？?]?|分享新鲜事[？?]?|发帖|新串文)$/i.test(txt)) {
+                        return b;
+                    }
+                }
+                return null;
+            };
+
+            const isThreadsLoginWall = () => {
+                if (location.pathname.startsWith("/login")) return true;
+                const loginLink = document.querySelector('a[href*="/login"]');
+                return Boolean(loginLink && isVisibleControl(loginLink) && !findThreadsCreateTrigger());
+            };
+
+            let editorEl = findThreadsEditor();
+            let triggerAttempts = 0;
+            let lastTriggerAt = 0;
+            const startTs = Date.now();
+            const deadline = startTs + 15000;
+            while (!editorEl && Date.now() < deadline) {
+                if (isThreadsLoginWall() && (Date.now() - startTs) > 4000) {
+                    return { ok: false, error: "Threads 尚未登录，请先在当前 Chrome 登录后重试" };
+                }
+                if (triggerAttempts < 2 && Date.now() - lastTriggerAt >= 2500) {
+                    const trigger = findThreadsCreateTrigger();
+                    if (trigger) {
+                        triggerAttempts += 1;
+                        lastTriggerAt = Date.now();
+                        try {
+                            trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+                            trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+                            trigger.click();
+                        } catch (e) {}
+                    }
+                }
+                await sleep(250);
+                editorEl = findThreadsEditor();
+            }
+
+            if (!editorEl) {
+                return {
+                    ok: false,
+                    error: isThreadsLoginWall()
+                        ? "Threads 尚未登录，请先在当前 Chrome 登录后重试"
+                        : "未检测到 Threads 发帖框，请确认已登录并点击发帖图标"
+                };
+            }
+
+            const payload = buildSocialPostPayload(title, markdown, meta.digest || "", { maxChars: 490, weighted: false });
+            const textOk = await injectPlainTextToRichEditor(editorEl, payload.postText);
+            if (!textOk) {
+                return { ok: false, error: "Threads 发帖框写入失败，请手动粘贴" };
+            }
+
+            const mediaFiles = collectSocialImageFiles(assets, meta.coverBase64, 4);
+            const scopeEl = editorEl.closest('div[role="dialog"]') || editorEl.closest("form") || document;
+            const mediaAttached = await attachMediaFilesToComposer(
+                scopeEl,
+                editorEl,
+                mediaFiles,
+                [
+                    'input[type="file"][accept*="image"]',
+                    'input[type="file"]'
+                ],
+                'img[src^="blob:"], img[src^="data:image/"]'
+            );
+
+            // 严禁点击 Post / 发布 按钮，安全停留在待发布确认态
+            return {
+                ok: true,
+                editor: "threads-lexical",
+                truncated: payload.truncated,
+                charCount: payload.charCount,
+                mediaAttached,
+                fullText: payload.fullText,
+                postText: payload.postText
+            };
         }
     }
 
